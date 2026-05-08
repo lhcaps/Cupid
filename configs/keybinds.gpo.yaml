@@ -1,0 +1,13 @@
+# Keybinds config for GPO
+# Customize these to match your in-game keybinds
+
+keybinds:
+  slot_pika_v2: "2"
+  armament_haki: "j"
+  observation_haki: "g"
+  jump: "space"
+  forward: "w"
+  backward: "s"
+  radiant_kick: "r"
+  dash: "q"
+  blitz_strike: "e"

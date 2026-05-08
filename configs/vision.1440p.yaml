@@ -1,0 +1,13 @@
+# Vision config for 1440p (2560x1440) screens
+screen:
+  width: 2560
+  height: 1440
+  fps_target: 20
+
+progress_ui:
+  crop: [0, 0, 560, 190]
+  min_confidence: 0.75
+
+compass:
+  crop: [0, 0, 2560, 90]
+  heading_tolerance_deg: 12

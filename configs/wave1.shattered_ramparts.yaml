@@ -1,0 +1,61 @@
+# Wave 1 MVP Config — Shattered Ramparts at 2560x1440 (from MedalTV video analysis)
+# Updated crop regions based on actual gameplay video (MedalTVRoblox20260509053121278-trim.mp4)
+
+screen:
+  width: 2560
+  height: 1440
+  fps_target: 20
+
+keybinds:
+  slot_pika_v2: "2"
+  armament_haki: "j"
+  observation_haki: "g"
+  jump: "space"
+  forward: "w"
+  backward: "s"
+  radiant_kick: "r"
+  dash: "q"
+  blitz_strike: "e"
+
+# Progress UI crop regions (from video analysis)
+# Counter "x/4": TOP-RIGHT at x=1380-1620, y=110-150
+# Wave panel: TOP-RIGHT at x=1500-1760, y=0-100
+# Combined progress UI area: x=1300-1850, y=0-180
+progress_ui:
+  crop: [1300, 0, 1850, 180]
+  counter_crop: [1380, 110, 1620, 150]
+  wave_panel_crop: [1500, 0, 1760, 100]
+  stage_name: "Shattered Ramparts"
+  dungeon_name: "Cupid's Ruin"
+  objective_total: 4
+  min_confidence: 0.75
+
+# Compass crop (from video analysis)
+# TOP CENTER at x=1260-1295, y=15-55 (single letter indicator)
+# But full compass bar spans the top
+compass:
+  crop: [1200, 10, 1400, 60]
+  target_exit_heading: "S"
+  heading_tolerance_deg: 15
+  rotate_timeout_sec: 3.0
+
+wave1:
+  setup_delay_ms: 500
+  geppo_count: 5
+  geppo_interval_ms_min: 100
+  geppo_interval_ms_max: 180
+  aggro_wait_ms: 1000
+  radiant_kick_charge_ms: 1900
+  damage_register_wait_ms: 1600
+  max_cleanup_cycles: 2
+
+observation_haki:
+  scan_duration_ms: 900
+  min_target_confidence: 0.65
+  max_scans_per_stage: 2
+
+safety:
+  emergency_stop_key: "f1"
+  max_state_duration_sec: 15.0
+  release_all_keys_on_stop: true
+  save_failure_screenshot: true

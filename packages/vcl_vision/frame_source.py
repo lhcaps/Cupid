@@ -1,0 +1,138 @@
+"""Frame sources: video file and live screen capture."""
+from __future__ import annotations
+
+import cv2
+import mss
+import time
+import numpy as np
+from pathlib import Path
+from typing import Iterator, Literal
+
+from vcl_core.timebase import Clock
+
+
+class VideoReader:
+    """Reads frames from a video file with timestamps."""
+
+    def __init__(self, video_path: str | Path) -> None:
+        self.video_path = Path(video_path)
+        if not self.video_path.exists():
+            raise FileNotFoundError(f"Video not found: {self.video_path}")
+
+        self._cap = cv2.VideoCapture(str(self.video_path))
+        if not self._cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {self.video_path}")
+
+        self.fps = self._cap.get(cv2.CAP_PROP_FPS)
+        self.frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.duration_sec = self.frame_count / self.fps if self.fps > 0 else 0.0
+        self.clock = Clock()
+
+    def __iter__(self) -> Iterator[tuple[float, np.ndarray]]:
+        """Yield (timestamp_sec, frame) tuples."""
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        self.clock.reset()
+        frame_idx = 0
+        while True:
+            ret, frame = self._cap.read()
+            if not ret:
+                break
+            yield self.clock.now(), frame.copy()
+            frame_idx += 1
+
+    def iter_sampled(self, interval_sec: float = 1.0) -> Iterator[tuple[float, np.ndarray]]:
+        """Yield frames at fixed time intervals."""
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        self.clock.reset()
+        next_sample = 0.0
+        frame_idx = 0
+        while True:
+            target_time = self.clock.now()
+            if target_time >= next_sample:
+                ret, frame = self._cap.read()
+                if not ret:
+                    break
+                yield target_time, frame.copy()
+                next_sample += interval_sec
+                frame_idx += 1
+            else:
+                skip_frames = int((next_sample - target_time) * self.fps)
+                if skip_frames > 0:
+                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx + skip_frames)
+                    frame_idx += skip_frames
+
+    def close(self) -> None:
+        self._cap.release()
+
+    def __enter__(self) -> "VideoReader":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    @property
+    def metadata(self) -> dict:
+        return {
+            "video_path": str(self.video_path),
+            "fps": self.fps,
+            "frame_count": self.frame_count,
+            "width": self.width,
+            "height": self.height,
+            "duration_sec": self.duration_sec,
+        }
+
+
+class LiveFrameSource:
+    """Captures frames from the live screen using mss."""
+
+    def __init__(
+        self,
+        monitor_index: int = 1,
+        fps_target: int = 20,
+        region: dict | None = None,
+    ) -> None:
+        self._sct = mss.mss()
+        self.monitor_index = monitor_index
+        self.fps_target = fps_target
+        self._interval_sec = 1.0 / fps_target
+        self._region = region
+        self._running = False
+        self.clock = Clock()
+        self._stop_flag = False
+
+        monitor = self._sct.monitors[monitor_index]
+        self.width = monitor["width"]
+        self.height = monitor["height"]
+
+    def __iter__(self) -> Iterator[tuple[float, np.ndarray]]:
+        self._running = True
+        self._stop_flag = False
+        self.clock.reset()
+        while self._running:
+            elapsed = self.clock.now()
+            sleep_time = self._interval_sec - elapsed % self._interval_sec
+            if sleep_time > 0 and sleep_time < self._interval_sec:
+                time.sleep(sleep_time)
+            if self._stop_flag:
+                break
+
+            shot = self._sct.grab(self._region or self._sct.monitors[self.monitor_index])
+            frame = np.array(shot)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            yield self.clock.now(), frame
+
+    def stop(self) -> None:
+        self._stop_flag = True
+        self._running = False
+
+    def close(self) -> None:
+        self._running = False
+        self._sct.close()
+
+    def __enter__(self) -> "LiveFrameSource":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()

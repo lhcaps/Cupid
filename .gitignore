@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+*.whl
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Reports
+reports/run_logs/
+reports/debug_videos/
+reports/failure_cases/
+
+# Video files (too large for git)
+*.mp4
+*.mov
+*.avi
+
+# Extracted frames (too large)
+datasets/raw_videos/frames/
+datasets/frames/
+
+# Cached analysis
+*.cache
+.pyright/
+
+# Environment
+.env
+.env.local
