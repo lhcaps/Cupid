@@ -203,6 +203,37 @@ def live(
                     progress = progress_det.detect(frame)
                     compass = compass_det.detect(frame)
 
+                    progress_str = (
+                        f"{progress.objective_current}/{progress.objective_total}"
+                        if progress.objective_current is not None and progress.objective_total is not None
+                        else "?"
+                    )
+
+                    RISKY_STATES = (
+                        Wave1State.VERIFY_STAGE_UI,
+                        Wave1State.AGGRO_WITH_GEPPO,
+                        Wave1State.CAST_CHARGED_RADIANT_KICK,
+                        Wave1State.RELEASE_RADIANT_KICK,
+                        Wave1State.VERIFY_COUNTER,
+                        Wave1State.ALIGN_TO_EXIT,
+                        Wave1State.MOVE_NEXT_STAGE,
+                    )
+
+                    if mode == "execute" and hsm.state in RISKY_STATES:
+                        if progress.confidence < cfg.progress_ui.min_confidence:
+                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} < {cfg.progress_ui.min_confidence:.2f} — skipping hsm.tick, releasing keys[/yellow]")
+                            executor.primitives.release_held_keys()
+                            logger.log(
+                                state=hsm.state.value,
+                                timestamp=elapsed,
+                                progress=progress_str,
+                                compass=compass.label,
+                                action=Wave1Action(name=Wave1ActionName.WAIT, reason="low_confidence_paused"),
+                                progress_confidence=progress.confidence,
+                                compass_confidence=compass.confidence,
+                            )
+                            continue
+
                     action = hsm.tick(
                         game_state=None,
                         progress=progress,
@@ -210,11 +241,6 @@ def live(
                         current_time=elapsed,
                     )
 
-                    progress_str = (
-                        f"{progress.objective_current}/{progress.objective_total}"
-                        if progress.objective_current is not None and progress.objective_total is not None
-                        else "?"
-                    )
                     console.print(
                         f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
                         f"action={action.name.value} obj={progress_str}"
@@ -229,30 +255,6 @@ def live(
                         progress_confidence=progress.confidence,
                         compass_confidence=compass.confidence,
                     )
-
-                    RISKY_STATES = (
-                        Wave1State.VERIFY_STAGE_UI,
-                        Wave1State.AGGRO_WITH_GEPPO,
-                        Wave1State.CAST_CHARGED_RADIANT_KICK,
-                        Wave1State.RELEASE_RADIANT_KICK,
-                        Wave1State.VERIFY_COUNTER,
-                        Wave1State.ALIGN_TO_EXIT,
-                        Wave1State.MOVE_NEXT_STAGE,
-                    )
-                    if mode == "execute" and hsm.state in RISKY_STATES:
-                        if progress.confidence < cfg.progress_ui.min_confidence:
-                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} < {cfg.progress_ui.min_confidence:.2f} — pausing hsm.tick, releasing keys[/yellow]")
-                            executor.primitives.release_held_keys()
-                            logger.log(
-                                state=hsm.state.value,
-                                timestamp=elapsed,
-                                progress=progress_str,
-                                compass=compass.label,
-                                action=Wave1Action(name=Wave1ActionName.WAIT, reason="low_confidence_paused"),
-                                progress_confidence=progress.confidence,
-                                compass_confidence=compass.confidence,
-                            )
-                            continue
 
                     if mode == "execute":
                         executor.execute(action.name)

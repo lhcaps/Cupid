@@ -556,8 +556,8 @@ class TestWave1HSM:
 
         assert hsm.state == Wave1State.VERIFY_STAGE_UI, \
             f"Low confidence 0.60 < 0.75 must keep HSM in VERIFY_STAGE_UI, got {hsm.state}"
-        assert "VERIFY_STAGE_UI@" in list(hsm._action_emitted)[0], \
-            "VERIFY_STAGE_UI action should be emitted but state should not advance"
+        assert any("VERIFY_STAGE_UI@" in k for k in hsm._action_emitted), \
+            "VERIFY_STAGE_UI action should have been emitted at least once"
 
     def test_low_confidence_recovery_executes_action(self):
         """After low-confidence frames, once confidence >= min_confidence, HSM must emit."""
