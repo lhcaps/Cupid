@@ -86,11 +86,27 @@ class TestCaptureBackend:
         backend.close()
 
     def test_dxcam_missing_raises_clear_error(self):
+        """create_capture_backend('dxcam') must raise RuntimeError with install hint when dxcam is absent.
+
+        Since dxcam IS installed in this environment, we verify the import path works
+        and the backend can be created. In CI (dxcam absent), the factory raises
+        RuntimeError with "pip install" hint from the lazy-import error handler.
+        """
         from vcl_capture.backends import create_capture_backend
-        # Try to create dxcam backend — should raise RuntimeError with install hint
-        # (it won't actually import since dxcam isn't installed)
-        with pytest.raises(RuntimeError, match="dxcam.*not installed|not installed"):
-            create_capture_backend("dxcam")
+        try:
+            import dxcam
+        except ImportError:
+            # dxcam not installed — factory must raise with install hint
+            with pytest.raises(RuntimeError, match="pip install.*dxcam"):
+                create_capture_backend("dxcam")
+            return
+
+        # dxcam installed — verify the backend is fully functional
+        backend = create_capture_backend("dxcam")
+        assert backend.name == "dxcam"
+        assert backend.width > 0
+        assert backend.height > 0
+        backend.close()
 
     def test_dxcam_backend_uses_dxcam_create_api(self):
         """DXCamCaptureBackend must use dxcam.create(), not dxcam.DXCam()."""
@@ -106,16 +122,22 @@ class TestCaptureBackend:
             "DXCamCaptureBackend must not use deprecated dxcam.DXCam(). Use dxcam.create()."
         )
 
-    def test_dxcam_grab_passes_region_and_new_frame_only_false(self):
-        """DXCamCaptureBackend.grab() must pass region and new_frame_only=False."""
+    def test_dxcam_backend_passes_region_to_create(self):
+        """DXCamCaptureBackend must pass region to dxcam.create(), not to grab()."""
+        import inspect
+        from vcl_capture.backends import DXCamCaptureBackend
+        source = inspect.getsource(DXCamCaptureBackend.__init__)
+        assert "region=region" in source, (
+            "DXCamCaptureBackend.__init__() must pass region to dxcam.create()."
+        )
+
+    def test_dxcam_grab_uses_get_latest_frame(self):
+        """DXCamCaptureBackend.grab() must use get_latest_frame()."""
         import inspect
         from vcl_capture.backends import DXCamCaptureBackend
         source = inspect.getsource(DXCamCaptureBackend.grab)
-        assert "new_frame_only" in source, (
-            "DXCamCaptureBackend.grab() must use new_frame_only=False."
-        )
-        assert "region=" in source or "region" in source, (
-            "DXCamCaptureBackend.grab() must pass region to grab()."
+        assert "get_latest_frame" in source, (
+            "DXCamCaptureBackend.grab() must use get_latest_frame()."
         )
 
     def test_unknown_backend_raises_value_error(self):

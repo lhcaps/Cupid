@@ -73,22 +73,16 @@ class DXCamCaptureBackend(CaptureBackend):
         self._cam = dxcam.create(
             output_idx=max(0, monitor_index - 1),
             output_color=output_color,
+            region=region,
         )
-        self._region = region
         self._output_color = output_color
         self._fps_target = fps_target
 
-        info = self._cam.get_monitors_info()
-        if info:
-            target = info[min(monitor_index - 1, len(info) - 1)]
-            self.width = int(target.get("width", 1920))
-            self.height = int(target.get("height", 1080))
-        else:
-            self.width = 1920
-            self.height = 1080
+        self.width = getattr(self._cam, "width", 1920)
+        self.height = getattr(self._cam, "height", 1080)
 
     def grab(self) -> np.ndarray:
-        frame = self._cam.grab(region=self._region, new_frame_only=False)
+        frame = self._cam.get_latest_frame()
         if frame is None:
             raise RuntimeError(
                 "DXcam grab() returned None. "
