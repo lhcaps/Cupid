@@ -13,7 +13,7 @@ from rich.panel import Panel
 
 from vcl_core.config import load_config, AppConfig
 from vcl_core.logger import RunLogger
-from vcl_core.schemas import RunSummary
+from vcl_core.schemas import RunSummary, Wave1Action, Wave1ActionName
 from vcl_vision.frame_source import VideoReader, LiveFrameSource
 from vcl_vision.progress_detector import ProgressDetector
 from vcl_vision.compass_detector import CompassDetector
@@ -88,7 +88,11 @@ def simulate(
         logger.log(
             state=state,
             timestamp=ts,
-            progress=f"{progress_state.objective_current or '?'}/{progress_state.objective_total or '?'}",
+            progress=(
+                f"{progress_state.objective_current}/{progress_state.objective_total}"
+                if progress_state.objective_current is not None and progress_state.objective_total is not None
+                else "?"
+            ),
             compass=compass_state.label,
             action=action,
             progress_confidence=progress_state.confidence,
@@ -109,10 +113,17 @@ def simulate(
         run_status_sim = "fail"
 
     final_progress = hsm._prev_progress
-    objective_final = (
-        f"{final_progress.objective_current or '?'}/{final_progress.objective_total or '?'}"
-        if final_progress else "?"
-    )
+    if final_progress is not None:
+        curr = final_progress.objective_current if final_progress.objective_current is not None else None
+        total = final_progress.objective_total if final_progress.objective_total is not None else None
+        if curr is not None and total is not None:
+            objective_final = f"{curr}/{total}"
+        elif curr is not None:
+            objective_final = f"{curr}/?"
+        else:
+            objective_final = "?/?"
+    else:
+        objective_final = "?/?"
 
     summary = RunSummary(
         run_id=logger.run_id,
@@ -199,7 +210,11 @@ def live(
                         current_time=elapsed,
                     )
 
-                    progress_str = f"{progress.objective_current or '?'}/{progress.objective_total or '?'}"
+                    progress_str = (
+                        f"{progress.objective_current}/{progress.objective_total}"
+                        if progress.objective_current is not None and progress.objective_total is not None
+                        else "?"
+                    )
                     console.print(
                         f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
                         f"action={action.name.value} obj={progress_str}"
@@ -219,14 +234,24 @@ def live(
                         Wave1State.VERIFY_STAGE_UI,
                         Wave1State.AGGRO_WITH_GEPPO,
                         Wave1State.CAST_CHARGED_RADIANT_KICK,
+                        Wave1State.RELEASE_RADIANT_KICK,
                         Wave1State.VERIFY_COUNTER,
                         Wave1State.ALIGN_TO_EXIT,
                         Wave1State.MOVE_NEXT_STAGE,
                     )
                     if mode == "execute" and hsm.state in RISKY_STATES:
                         if progress.confidence < cfg.progress_ui.min_confidence:
-                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} — pausing, releasing keys[/yellow]")
+                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} < {cfg.progress_ui.min_confidence:.2f} — pausing hsm.tick, releasing keys[/yellow]")
                             executor.primitives.release_held_keys()
+                            logger.log(
+                                state=hsm.state.value,
+                                timestamp=elapsed,
+                                progress=progress_str,
+                                compass=compass.label,
+                                action=Wave1Action(name=Wave1ActionName.WAIT, reason="low_confidence_paused"),
+                                progress_confidence=progress.confidence,
+                                compass_confidence=compass.confidence,
+                            )
                             continue
 
                     if mode == "execute":
@@ -249,7 +274,11 @@ def live(
             run_id=run_id,
             status=run_status,
             duration_sec=round(duration, 1),
-            objective_final=f"{hsm._prev_progress.objective_current or '?'}/{hsm._prev_progress.objective_total or '?'}",
+            objective_final=(
+                f"{hsm._prev_progress.objective_current}/{hsm._prev_progress.objective_total}"
+                if hsm._prev_progress and hsm._prev_progress.objective_current is not None and hsm._prev_progress.objective_total is not None
+                else "?"
+            ),
             radiant_kick_casts=hsm._radiant_kick_casts,
             observation_scans=hsm._observation_scans,
             cleanup_cycles=hsm._cleanup_cycles,

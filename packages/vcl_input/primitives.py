@@ -84,7 +84,8 @@ class InputPrimitives:
             self.keybinds.jump, self.keybinds.radiant_kick,
             self.keybinds.dash, self.keybinds.blitz_strike,
             self.keybinds.observation_haki, self.keybinds.armament_haki,
-            "a", "d", "q", "e", "r", "g", "j", "space", "w", "s",
+            self.keybinds.slot_pika_v2,
+            "a", "d", "q", "e", "r", "g", "j", "space", "w", "s", "1", "2",
         ]
         for key in ALL_KEYS:
             self._release_fn(key)

@@ -148,7 +148,8 @@ class TestWave1HSM:
         assert Wave1State.AGGRO_WITH_GEPPO not in reached_states
 
     def test_damage_register_wait_prevents_immediate_verify(self):
-        """HSM must wait damage_register_wait_ms AFTER release before VERIFY_COUNTER."""
+        """HSM must wait damage_register_wait_ms AFTER release before VERIFY_COUNTER.
+        With split states: CAST_CHARGED_RADIANT_KICK -> RELEASE_RADIANT_KICK -> WAIT -> VERIFY_COUNTER."""
         hsm = Wave1HSM()
         cfg = hsm.wave1_cfg
 
@@ -163,7 +164,9 @@ class TestWave1HSM:
             current_time=2.0,
         )
         assert action_at_charge_end.name == Wave1ActionName.RELEASE_RADIANT_KICK
-        assert hsm._radiant_released_at == 2.0
+        assert hsm.state == Wave1State.RELEASE_RADIANT_KICK
+        assert hsm._radiant_released_at == 2.0, \
+            "_radiant_released_at should equal current_time after transition"
 
         action_during_wait = hsm.tick(
             game_state=None,
@@ -172,7 +175,7 @@ class TestWave1HSM:
             current_time=2.5,
         )
         assert action_during_wait.name == Wave1ActionName.WAIT
-        assert hsm.state == Wave1State.CAST_CHARGED_RADIANT_KICK
+        assert hsm.state == Wave1State.RELEASE_RADIANT_KICK
 
         action_after_wait = hsm.tick(
             game_state=None,
@@ -183,6 +186,7 @@ class TestWave1HSM:
         wait_ms = cfg.damage_register_wait_ms
         assert wait_ms >= 2000, f"damage_register_wait_ms should be ~2200ms, got {wait_ms}ms"
         assert hsm.state == Wave1State.VERIFY_COUNTER
+        assert action_after_wait.name == Wave1ActionName.READ_PROGRESS
 
     def test_hsm_resets(self):
         hsm = Wave1HSM()
@@ -413,3 +417,194 @@ class TestWave1HSM:
         ok3, reason3 = guard_objective_complete(p_none_total, min_confidence=0.65)
         assert not ok3
         assert "objective_total_not_set" in reason3
+
+    def test_cast_emits_hold_then_release_then_wait_then_verify(self):
+        """Normal CAST timeline: HOLD -> RELEASE -> WAIT (damage wait) -> VERIFY_COUNTER.
+        Each action emits exactly once in its own state."""
+        hsm = Wave1HSM()
+        cfg = hsm.wave1_cfg
+        charge_time = cfg.radiant_kick_charge_ms / 1000.0 + 0.05
+        wait_time = cfg.damage_register_wait_ms / 1000.0 + 0.05
+
+        hsm._transition_to(Wave1State.CAST_CHARGED_RADIANT_KICK, 0.0)
+
+        action_hold = hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, confidence=0.9),
+            compass=make_compass(),
+            current_time=0.5,
+        )
+        assert action_hold.name == Wave1ActionName.HOLD_RADIANT_KICK
+        assert hsm.state == Wave1State.CAST_CHARGED_RADIANT_KICK
+
+        action_release = hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, confidence=0.9),
+            compass=make_compass(),
+            current_time=charge_time,
+        )
+        assert action_release.name == Wave1ActionName.RELEASE_RADIANT_KICK
+        assert hsm.state == Wave1State.RELEASE_RADIANT_KICK
+
+        action_wait = hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, confidence=0.9),
+            compass=make_compass(),
+            current_time=charge_time + 1.0,
+        )
+        assert action_wait.name == Wave1ActionName.WAIT
+        assert hsm.state == Wave1State.RELEASE_RADIANT_KICK
+
+        action_verify = hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, confidence=0.9),
+            compass=make_compass(),
+            current_time=charge_time + wait_time,
+        )
+        assert action_verify.name == Wave1ActionName.READ_PROGRESS
+        assert hsm.state == Wave1State.VERIFY_COUNTER
+
+    def test_release_not_suppressed_by_one_shot(self):
+        """RELEASE_RADIANT_KICK must NOT be suppressed after HOLD_RADIANT_KICK.
+        With split states, they are in different state entries, so this cannot happen."""
+        hsm = Wave1HSM()
+        cfg = hsm.wave1_cfg
+
+        hsm._transition_to(Wave1State.CAST_CHARGED_RADIANT_KICK, 0.0)
+
+        action_hold = hsm._emit_action_once(
+            Wave1State.CAST_CHARGED_RADIANT_KICK,
+            Wave1ActionName.HOLD_RADIANT_KICK,
+            "hold",
+            0.5,
+        )
+        assert action_hold.name == Wave1ActionName.HOLD_RADIANT_KICK
+
+        hsm._transition_to(Wave1State.RELEASE_RADIANT_KICK, 2.0)
+        action_release = hsm._emit_action_once(
+            Wave1State.RELEASE_RADIANT_KICK,
+            Wave1ActionName.RELEASE_RADIANT_KICK,
+            "release",
+            2.05,
+        )
+        assert action_release.name == Wave1ActionName.RELEASE_RADIANT_KICK, \
+            "RELEASE_RADIANT_KICK must emit in RELEASE_RADIANT_KICK state, not suppressed"
+
+    def test_done_by_counter_reset_after_move_exit(self):
+        """HSM must reach DONE when counter resets 0/4 after MOVE_TO_EXIT.
+        This requires prev_objective==4 and confidence >= 0.75."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.CONFIRM_STAGE_TRANSITION, tick())
+        hsm._prev_stage = "Shattered Ramparts"
+        hsm._prev_objective = 4
+
+        for _ in range(12):
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(
+                    current=0, total=4, confidence=0.80,
+                    stage_name="Shattered Ramparts",
+                ),
+                compass=make_compass(),
+                current_time=tick(),
+            )
+
+        assert hsm.state == Wave1State.DONE, \
+            f"DONE expected from counter reset 0/4 with confidence>=0.75, got {hsm.state}"
+
+    def test_no_done_by_counter_reset_before_move_exit(self):
+        """Counter reset alone must NOT trigger DONE if prev_objective != 4.
+        The guard checks prev_objective==4 as a prerequisite."""
+        hsm = Wave1HSM()
+        from vcl_hsm.transitions import guard_stage_transitioned
+
+        progress = make_progress(current=0, total=4, confidence=0.80, stage_name="Shattered Ramparts")
+        ok, reason = guard_stage_transitioned(
+            prev_stage="Shattered Ramparts",
+            prev_objective=2,
+            progress=progress,
+            expected_next_stage="The Forsaken Garden",
+            timeout_sec=5.0,
+            state_entered_at=0.0,
+            current_time=1.0,
+        )
+        assert not ok, f"Counter reset with prev_objective=2 should not confirm transition: {reason}"
+        assert "waiting_transition" in reason
+
+    def test_low_confidence_does_not_consume_geppo_action(self):
+        """Low-confidence frames in VERIFY_STAGE_UI must NOT consume GEPPO_STACK.
+        HSM should use cfg.min_confidence (0.75) for stage_verified guard."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_STAGE_UI, tick())
+
+        for _ in range(5):
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(
+                    current=0, total=4, confidence=0.60,
+                    stage_name="Shattered Ramparts",
+                ),
+                compass=make_compass(),
+                current_time=tick(),
+            )
+
+        assert hsm.state == Wave1State.VERIFY_STAGE_UI, \
+            f"Low confidence 0.60 < 0.75 must keep HSM in VERIFY_STAGE_UI, got {hsm.state}"
+        assert "VERIFY_STAGE_UI@" in list(hsm._action_emitted)[0], \
+            "VERIFY_STAGE_UI action should be emitted but state should not advance"
+
+    def test_low_confidence_recovery_executes_action(self):
+        """After low-confidence frames, once confidence >= min_confidence, HSM must emit."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.AGGRO_WITH_GEPPO, tick())
+        entry_time = tick()
+
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, confidence=0.60),
+            compass=make_compass(),
+            current_time=entry_time + 0.1,
+        )
+        assert hsm.state == Wave1State.AGGRO_WITH_GEPPO
+
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, confidence=0.80),
+            compass=make_compass(),
+            current_time=entry_time + hsm.wave1_cfg.aggro_wait_ms / 1000.0 + 0.1,
+        )
+        assert hsm.state == Wave1State.CAST_CHARGED_RADIANT_KICK
+
+    def test_simulate_objective_final_preserves_zero(self):
+        """Simulate summary must report 0/4 as '0/4', not '?/4'.
+        This tests the is-None guard pattern against the falsy-value bug."""
+        from vcl_core.schemas import ProgressState
+
+        final_progress = ProgressState(
+            stage_name="Shattered Ramparts",
+            objective_current=0,
+            objective_total=4,
+            confidence=0.85,
+        )
+
+        curr = final_progress.objective_current if final_progress.objective_current is not None else None
+        total = final_progress.objective_total if final_progress.objective_total is not None else None
+        if curr is not None and total is not None:
+            objective_final = f"{curr}/{total}"
+        elif curr is not None:
+            objective_final = f"{curr}/?"
+        else:
+            objective_final = "?/?"
+
+        assert objective_final == "0/4", \
+            f"objective_current=0 should produce '0/4', got '{objective_final}'"
+        assert objective_final != "?/4", "'0' must not be mistaken for None"

@@ -63,7 +63,7 @@ class Wave1HSM:
             window_size=3,
             required_count=3,
             required_objective=self.progress_cfg.objective_total,
-            min_confidence=0.65,
+            min_confidence=self.progress_cfg.min_confidence,
         )
 
         self._action_emitted: set[str] = set()
@@ -181,7 +181,9 @@ class Wave1HSM:
 
         if state == Wave1State.VERIFY_STAGE_UI:
             ok, _ = guard_stage_verified(
-                progress, expected_stage=self.progress_cfg.stage_name
+                progress,
+                expected_stage=self.progress_cfg.stage_name,
+                min_confidence=self.progress_cfg.min_confidence,
             )
             if ok:
                 self._transition_to(Wave1State.AGGRO_WITH_GEPPO, current_time)
@@ -223,9 +225,7 @@ class Wave1HSM:
 
         if state == Wave1State.CAST_CHARGED_RADIANT_KICK:
             elapsed = current_time - self._state_entered_at
-            charge_done = elapsed >= self.wave1_cfg.radiant_kick_charge_ms / 1000.0
-
-            if not charge_done:
+            if elapsed < self.wave1_cfg.radiant_kick_charge_ms / 1000.0:
                 return self._emit_action_once(
                     Wave1State.CAST_CHARGED_RADIANT_KICK,
                     Wave1ActionName.HOLD_RADIANT_KICK,
@@ -233,20 +233,21 @@ class Wave1HSM:
                     current_time,
                 )
 
-            if self._radiant_released_at is None:
-                self._radiant_released_at = current_time
-                return self._emit_action_once(
-                    Wave1State.CAST_CHARGED_RADIANT_KICK,
-                    Wave1ActionName.RELEASE_RADIANT_KICK,
-                    f"charge done at {elapsed:.1f}s, releasing",
-                    current_time,
-                )
+            self._transition_to(Wave1State.RELEASE_RADIANT_KICK, current_time)
+            self._radiant_released_at = current_time
+            return self._emit_action_once(
+                Wave1State.RELEASE_RADIANT_KICK,
+                Wave1ActionName.RELEASE_RADIANT_KICK,
+                f"charge done at {elapsed:.1f}s, releasing",
+                current_time,
+            )
 
+        if state == Wave1State.RELEASE_RADIANT_KICK:
             wait_elapsed = current_time - self._radiant_released_at
             wait_required = self.wave1_cfg.damage_register_wait_ms / 1000.0
             if wait_elapsed < wait_required:
                 return self._emit_action_once(
-                    Wave1State.CAST_CHARGED_RADIANT_KICK,
+                    Wave1State.RELEASE_RADIANT_KICK,
                     Wave1ActionName.WAIT,
                     f"waiting_damage_register: {wait_elapsed:.1f}s/{wait_required:.1f}s",
                     current_time,
@@ -259,7 +260,7 @@ class Wave1HSM:
             return self._emit_action_once(
                 Wave1State.VERIFY_COUNTER,
                 Wave1ActionName.READ_PROGRESS,
-                f"damage registered at {elapsed:.1f}s total, verifying counter",
+                f"damage registered, verifying counter",
                 current_time,
             )
 
@@ -270,7 +271,9 @@ class Wave1HSM:
                 progress.confidence if progress else 0.0,
             )
 
-            ok_complete, reason = guard_objective_complete(progress, min_confidence=0.65)
+            ok_complete, reason = guard_objective_complete(
+                progress, min_confidence=self.progress_cfg.min_confidence
+            )
             if ok_complete:
                 if self._stability.is_stable_clear():
                     self._prev_progress = progress
@@ -355,7 +358,7 @@ class Wave1HSM:
                 progress.confidence if progress else 0.0,
             )
 
-            ok_complete, _ = guard_objective_complete(progress, min_confidence=0.65)
+            ok_complete, _ = guard_objective_complete(progress, min_confidence=self.progress_cfg.min_confidence)
             if ok_complete:
                 if self._stability.is_stable_clear():
                     self._transition_to(Wave1State.ALIGN_TO_EXIT, current_time)

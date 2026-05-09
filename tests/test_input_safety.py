@@ -143,3 +143,25 @@ class TestInputSafety:
         p.release_held_keys()
         p.hold("w")
         assert "w" in p.held_keys
+
+    def test_release_held_keys_includes_slots_1_and_2(self):
+        """release_held_keys must release slot keys '1' and '2' and slot_pika_v2."""
+        keys_released: list[str] = []
+
+        class MockPrimitives(InputPrimitives):
+            def _default_release(self, key: str) -> None:
+                keys_released.append(key)
+
+        p = MockPrimitives()
+        p.hold("w")
+        p.hold("1")
+        p.hold("2")
+        p.hold(p.keybinds.slot_pika_v2)
+
+        p.release_held_keys()
+
+        assert "1" in keys_released, "release_held_keys must release '1'"
+        assert "2" in keys_released, "release_held_keys must release '2'"
+        assert p.keybinds.slot_pika_v2 in keys_released, \
+            "release_held_keys must release configured slot_pika_v2"
+        assert "w" in keys_released, "release_held_keys must still release 'w'"

@@ -30,6 +30,7 @@ def guard_can_exit(
     wave_loop_states = (
         WaveState.AGGRO_WITH_GEPPO,
         WaveState.CAST_CHARGED_RADIANT_KICK,
+        WaveState.RELEASE_RADIANT_KICK,
         WaveState.VERIFY_COUNTER,
         WaveState.OBS_HAKI_SCAN,
         WaveState.CLEANUP_IF_NEEDED,
@@ -64,6 +65,7 @@ def guard_wait_for_stage(
 def guard_stage_verified(
     progress: ProgressState | None,
     expected_stage: str = "Shattered Ramparts",
+    min_confidence: float = 0.75,
 ) -> tuple[bool, str]:
     """GUARD for VERIFY_STAGE_UI -> AGGRO_WITH_GEPPO."""
     if progress is None:
@@ -72,8 +74,8 @@ def guard_stage_verified(
         return False, "stage_name_not_detected"
     if progress.objective_total != 4:
         return False, f"unexpected_objective_total: {progress.objective_total}"
-    if progress.confidence < 0.70:
-        return False, f"low_stage_confidence: {progress.confidence:.2f}"
+    if progress.confidence < min_confidence:
+        return False, f"low_stage_confidence: {progress.confidence:.2f} < {min_confidence}"
     stage_lower = progress.stage_name.lower().replace("'", "").replace(" ", "")
     expected_lower = expected_stage.lower().replace("'", "").replace(" ", "")
     if stage_lower != expected_lower:
@@ -114,7 +116,7 @@ def guard_damage_registered(
 
 def guard_objective_complete(
     progress: ProgressState | None,
-    min_confidence: float = 0.65,
+    min_confidence: float = 0.75,
 ) -> tuple[bool, str]:
     """GUARD for VERIFY_COUNTER -> ALIGN_TO_EXIT."""
     if progress is None:
@@ -186,7 +188,12 @@ def guard_stage_transitioned(
     state_entered_at: float = 0.0,
     current_time: float = 0.0,
 ) -> tuple[bool, str]:
-    """GUARD for CONFIRM_STAGE_TRANSITION -> DONE. Requires explicit expected next stage."""
+    """GUARD for CONFIRM_STAGE_TRANSITION -> DONE.
+
+    Requires explicit expected next stage.
+    Fallback: counter reset (prev_objective==4 and current==0) only works after
+    MOVE_TO_EXIT has been called, which is enforced by state machine flow.
+    """
     if current_time - state_entered_at > timeout_sec:
         return False, "transition_timeout"
 
@@ -198,5 +205,17 @@ def guard_stage_transitioned(
 
     if current_lower == expected_lower:
         return True, f"transition_confirmed: {progress.stage_name}"
+
+    if (
+        prev_stage is not None
+        and prev_objective is not None
+        and prev_objective == 4
+        and progress.objective_current is not None
+        and progress.objective_current == 0
+        and progress.objective_total is not None
+        and progress.objective_total == 4
+        and progress.confidence >= 0.75
+    ):
+        return True, "transition_confirmed_by_counter_reset"
 
     return False, f"waiting_transition: stage={progress.stage_name}, expected={expected_next_stage}"
