@@ -384,11 +384,51 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 - If assist confirms stable reads, run execute mode with fail-case logging
 - Begin 10-run verification once execute is stable
 
+### Phase P0.7 — Executor/HSM Runtime Blockers (Live Execution Fixes)
+
+**Dependency:** Phase P0.6
+**Status:** COMPLETED (2026-05-09)
+**Goal:** Fix critical runtime bugs preventing Wave 1 live execution from completing.
+
+**Root causes fixed:**
+1. **Executor TAP was a no-op:** `ActionSequence.tick()` never called `primitives.press/release` for TAP steps. Fixed: TAP now calls `press(key)` on first tick and `release(key)` after `down_ms` elapsed.
+2. **Executor HOLD released immediately:** HOLD step only waited for `down_ms` but never actually waited non-blocking. Fixed: HOLD presses key on first tick, waits `down_ms`, releases on subsequent tick.
+3. **WAIT type missing:** Intervals used fake key `HOLD "dummy_wait"` and `HOLD "infinite_wait"`, which called `primitives.hold()` on non-existent keys. Fixed: Added `DeferredActionType.WAIT` that never calls press/release.
+4. **OBS_HAKI_SCAN did not early-exit:** Could not transition to `ALIGN_TO_EXIT` mid-scan even when stable 4/4 appeared. Fixed: Now updates `CounterStabilityTracker` every frame and exits immediately on stable clear.
+5. **VERIFY_COUNTER branched on single bad frame:** A single 0/4 read after 4/4 flicker triggered OBS_HAKI_SCAN. Fixed: Added `verify_window_sec` (1.5s) guard; counter must be incomplete after window expires before routing to cleanup.
+6. **Impossible counter drops not rejected:** 4/4 -> 0/4 mid-wave was treated as valid incomplete. Fixed: Added `is_impossible_drop()` to `CounterStabilityTracker`; rejects drops of >=2 below required objective when high count was previously seen.
+7. **MOVE_TO_EXIT left W held forever:** Sequence was `HOLD forward` + `HOLD "infinite_wait"` with no release. Fixed: Now uses `HOLD forward` + `WAIT` + `RELEASE forward`.
+
+**Files changed:**
+- `packages/vcl_input/executor.py` — TAP/hold/WAIT semantics, no fake keys
+- `packages/vcl_input/primitives.py` — added `press()` method
+- `packages/vcl_hsm/wave1_machine.py` — OBS early-exit, verify window, impossible drop rejection
+- `packages/vcl_hsm/stability.py` — `saw_high_count()`, `is_impossible_drop()` methods
+- `packages/vcl_core/config.py` — added `verify_window_sec: float = 1.5` to `Wave1Config`
+- `configs/wave1.shattered_ramparts.yaml` — added `verify_window_sec: 1.5`
+- `configs/app.default.yaml` — added `verify_window_sec: 1.5`
+- `tests/test_executor.py` (new) — 21 tests for TAP, WAIT, HOLD, fake-key removal
+- `tests/test_wave1_hsm.py` — 4 new tests for OBS early-exit, verify window, impossible drop
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `python -m pytest tests/` → 111/111 PASS (21 new executor tests + 4 new HSM tests)
+- `python -m apps.wave_runner.main --help` → PASS
+- `python -m apps.replay_analyzer.main --help` → PASS
+
+**Known remaining risks:**
+- Live game verification not possible in this environment — unit/simulation coverage only
+- Counter crop regions (`counter_crop: [1380, 110, 1620, 150]`) may need tuning on live runs
+- Progress detector confidence on real gameplay frames may differ from synthetic test frames
+- MOVE_TO_EXIT uses `damage_register_wait_ms` (2200ms) for movement duration — may need separate config
+- OBS_HAKI_SCAN stability update passes `confidence=None` when no progress — design choice, may need review
+
 **Next steps:**
-- Run assist mode first to validate low-confidence behavior on real gameplay
-- Tune `progress_ui.crop` / `progress_ui.counter_crop` based on assist mode feedback
-- If counter reads improve, run execute mode with fail-case logging
-- Progress to Phase 8 verification once assist confirms counter reads are stable
+- Run assist mode to validate counter reads on real gameplay
+- Tune `progress_ui.counter_crop` if reads are unstable
+- If counter reads are stable, run execute mode with `--stop-on-fail`
+- Collect 10-run metrics; tune `verify_window_sec` based on real counter behavior
+- Progress to Phase 8 (MVP Verification) once 9/10 clears achieved
 **Tasks:**
 1. Run 10 Wave 1 execute attempts, collect JSONL logs
 2. Compute metrics:

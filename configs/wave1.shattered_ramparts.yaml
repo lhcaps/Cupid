@@ -47,6 +47,7 @@ wave1:
   aggro_wait_ms: 1000
   radiant_kick_charge_ms: 2000
   damage_register_wait_ms: 2200
+  verify_window_sec: 1.5
   max_cleanup_cycles: 2
   next_stage_name: "The Forsaken Garden"
 

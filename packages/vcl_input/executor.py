@@ -1,7 +1,11 @@
 """Non-blocking input executor with deferred action queue.
 
-Fixes: blocking time.sleep() calls that freeze the main capture loop,
-and ensures all actions execute within a single game tick.
+Fixes:
+- TAP now properly presses and releases actual keys (was a no-op).
+- HOLD now waits full duration before releasing (was immediate release).
+- WAIT type added for pure non-blocking delays (replaces fake key HOLDs).
+- HOLD type is real key-only; no fake keys ever pressed.
+- Geppo/MOVE_TO_EXIT/MOVE_TO_ENEMY/OBSERVATION_SCAN sequences use real keys + WAIT.
 """
 from __future__ import annotations
 
@@ -21,12 +25,13 @@ class DeferredActionType(Enum):
     HOLD = "hold"
     TAP = "tap"
     RELEASE = "release"
+    WAIT = "wait"
 
 
 @dataclass
 class DeferredAction:
     action_type: DeferredActionType
-    key: str
+    key: str | None = None
     down_ms: int = 80
 
 
@@ -51,6 +56,7 @@ class ActionSequence:
     def tick(self, primitives: InputPrimitives, now: float) -> Literal["running", "done"]:
         """
         Advance one step. Returns 'running' if more steps remain, 'done' if complete.
+        Each call processes at most one deferred action.
         """
         if not self._started or self._step_index >= len(self.steps):
             return "done"
@@ -66,7 +72,7 @@ class ActionSequence:
                 return "running"
             if elapsed_ms < step.down_ms:
                 return "running"
-            # Hold duration complete, move to next step
+            # Hold duration complete, release key and advance
             primitives.release(step.key)
             self._holding = False
             self._step_index += 1
@@ -74,8 +80,17 @@ class ActionSequence:
             return "running" if self._step_index < len(self.steps) else "done"
 
         elif step.action_type == DeferredActionType.TAP:
+            if not self._holding:
+                # First tick: press key
+                primitives.press(step.key)
+                self._holding = True
+                self._subaction_start = now
+                return "running"
             if elapsed_ms < step.down_ms:
                 return "running"
+            # Down_ms elapsed: release key and advance
+            primitives.release(step.key)
+            self._holding = False
             self._step_index += 1
             self._subaction_start = now
             return "running" if self._step_index < len(self.steps) else "done"
@@ -86,12 +101,21 @@ class ActionSequence:
             self._subaction_start = now
             return "running" if self._step_index < len(self.steps) else "done"
 
+        elif step.action_type == DeferredActionType.WAIT:
+            if elapsed_ms < step.down_ms:
+                return "running"
+            self._step_index += 1
+            self._subaction_start = now
+            return "running" if self._step_index < len(self.steps) else "done"
+
         return "done"
 
     def cancel(self, primitives: InputPrimitives) -> None:
         """Release any held keys and reset."""
         if self._holding:
-            primitives.release(self.steps[self._step_index].key)
+            key = self.steps[self._step_index].key if self._step_index < len(self.steps) else None
+            if key:
+                primitives.release(key)
             self._holding = False
         self._started = False
         self._step_index = 0
@@ -219,22 +243,23 @@ class InputExecutor:
         )
 
     def _build_geppo_seq(self) -> ActionSequence:
-        """Geppo: rapid Space taps while holding S (move south toward enemies spawn).
-        Non-blocking: queues individual tap sequences instead of blocking loop."""
+        """Geppo: rapid Space taps while holding backward (S). Non-blocking.
+
+        Pattern: HOLD backward -> TAP jump -> WAIT interval -> ... -> RELEASE backward
+        No fake keys ever pressed.
+        """
         import random
         count = self.wave1_cfg.geppo_count
         interval_min = self.wave1_cfg.geppo_interval_ms_min
         interval_max = self.wave1_cfg.geppo_interval_ms_max
 
-        steps = [
+        steps: list[DeferredAction] = [
             DeferredAction(DeferredActionType.HOLD, self.keybinds.backward),
         ]
         for i in range(count):
             interval_ms = int(random.uniform(interval_min, interval_max))
             steps.append(DeferredAction(DeferredActionType.TAP, self.keybinds.jump, 60))
-            steps.append(
-                DeferredAction(DeferredActionType.HOLD, "dummy_wait", interval_ms)
-            )
+            steps.append(DeferredAction(DeferredActionType.WAIT, down_ms=interval_ms))
         steps.append(DeferredAction(DeferredActionType.RELEASE, self.keybinds.backward))
         return ActionSequence(name="geppo", steps=steps)
 
@@ -251,17 +276,18 @@ class InputExecutor:
         )
 
     def _build_observation_scan_seq(self) -> ActionSequence:
+        """Observation scan: tap G then wait for scan to complete. No fake keys."""
         scan_ms = self.config.observation_haki.scan_duration_ms
         return ActionSequence(
             name="observation_scan",
             steps=[
                 DeferredAction(DeferredActionType.TAP, self.keybinds.observation_haki, 80),
-                DeferredAction(DeferredActionType.HOLD, "dummy_wait", scan_ms),
+                DeferredAction(DeferredActionType.WAIT, down_ms=scan_ms),
             ],
         )
 
     def _build_cleanup_seq(self) -> ActionSequence:
-        """Blitz strike: forward + slot1 + blitz_strike."""
+        """Blitz strike: tap 1 to select slot, tap E for blitz strike."""
         return ActionSequence(
             name="cleanup",
             steps=[
@@ -274,22 +300,26 @@ class InputExecutor:
         return ActionSequence(name="align_compass", steps=[])
 
     def _build_move_to_exit_seq(self) -> ActionSequence:
-        """Move forward continuously toward exit."""
+        """Move forward: HOLD forward, WAIT for movement duration, RELEASE forward."""
+        move_ms = self.config.wave1.damage_register_wait_ms
         return ActionSequence(
             name="move_to_exit",
             steps=[
                 DeferredAction(DeferredActionType.HOLD, self.keybinds.forward),
-                DeferredAction(DeferredActionType.HOLD, "infinite_wait", 5000),
+                DeferredAction(DeferredActionType.WAIT, down_ms=move_ms),
+                DeferredAction(DeferredActionType.RELEASE, self.keybinds.forward),
             ],
         )
 
     def _build_move_to_enemy_seq(self) -> ActionSequence:
-        """Move backward toward south (toward enemies spawn)."""
+        """Move backward: HOLD backward, WAIT for movement duration, RELEASE backward."""
+        move_ms = self.config.wave1.damage_register_wait_ms
         return ActionSequence(
             name="move_to_enemy",
             steps=[
                 DeferredAction(DeferredActionType.HOLD, self.keybinds.backward),
-                DeferredAction(DeferredActionType.HOLD, "infinite_wait", 5000),
+                DeferredAction(DeferredActionType.WAIT, down_ms=move_ms),
+                DeferredAction(DeferredActionType.RELEASE, self.keybinds.backward),
             ],
         )
 

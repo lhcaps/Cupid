@@ -1,12 +1,18 @@
-"""Counter stability tracker: requires N consecutive high-confidence 4/4 reads before exiting."""
+"""Counter stability tracker: requires N consecutive high-confidence 4/4 reads before exiting.
+
+Also tracks whether the counter has ever shown a high count in the current window,
+to reject impossible resets (e.g., 4/4 -> 0/4) during gameplay.
+"""
 from __future__ import annotations
 
 
 class CounterStabilityTracker:
     """
-    Requires N consecutive high-confidence readings of 4/4 before reporting stable.
+    Requires N consecutive high-confidence readings of N/4 before reporting stable.
 
     Prevents false exit from a single noisy 4/4 frame followed by unclear reading.
+    Also detects impossible counter resets (e.g., 4/4 -> 0/4) that cannot happen
+    without a stage transition.
     Designed to be unit-testable and HSM-agnostic.
     """
 
@@ -53,6 +59,40 @@ class CounterStabilityTracker:
                 qualifying += 1
 
         return qualifying >= self.required_count
+
+    def saw_high_count(self) -> bool:
+        """
+        Return True if any read in the window showed objective_current >= required_objective
+        with sufficient confidence. Used to detect impossible counter resets.
+        """
+        for obj_cur, conf in self._reads:
+            if (
+                obj_cur is not None
+                and obj_cur >= self.required_objective
+                and conf >= self.min_confidence
+            ):
+                return True
+        return False
+
+    def is_impossible_drop(self, current: int | None, total: int | None, confidence: float) -> bool:
+        """
+        Return True if we have seen a high count (>= required_objective) in this window
+        but the current read shows a significantly lower count. This is an impossible
+        counter reset during normal gameplay and should be rejected.
+
+        Only returns True when:
+        - We have previously seen >= required_objective with good confidence
+        - Current read is significantly lower (>= 2 below required_objective)
+        - Current read has reasonable confidence
+        """
+        if not self.saw_high_count():
+            return False
+        if current is None or confidence < self.min_confidence:
+            return False
+        # Reject drop of 2 or more below required_objective (e.g., 4/4 -> 0/4 or 4/4 -> 1/4)
+        if current < self.required_objective - 1:
+            return True
+        return False
 
     @property
     def last_reads(self) -> list[tuple[int | None, float]]:

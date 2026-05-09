@@ -608,3 +608,120 @@ class TestWave1HSM:
         assert objective_final == "0/4", \
             f"objective_current=0 should produce '0/4', got '{objective_final}'"
         assert objective_final != "?/4", "'0' must not be mistaken for None"
+
+    def test_obs_haki_scan_early_exits_on_stable_4_4(self):
+        """OBS_HAKI_SCAN must transition to ALIGN_TO_EXIT if stable 4/4 appears during scan."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        # Enter OBS_HAKI_SCAN at t=1.5 (after BOOT and one tick increment)
+        hsm._transition_to(Wave1State.OBS_HAKI_SCAN, 1.5)
+
+        # Feed stable 4/4 reads — not enough for stability window yet
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=4, total=4, confidence=0.8),
+            compass=make_compass(),
+            current_time=1.6,
+        )
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=4, total=4, confidence=0.8),
+            compass=make_compass(),
+            current_time=1.7,
+        )
+        # Third read completes stability window (3 consecutive 4/4 with conf>=0.65)
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=4, total=4, confidence=0.8),
+            compass=make_compass(),
+            current_time=1.8,
+        )
+
+        assert hsm.state == Wave1State.ALIGN_TO_EXIT, \
+            f"OBS_HAKI_SCAN should early-exit to ALIGN_TO_EXIT on stable 4/4, got {hsm.state}"
+
+    def test_verify_counter_requires_window_before_obs_haki(self):
+        """VERIFY_COUNTER must not transition to OBS_HAKI_SCAN before verification window expires."""
+        hsm = Wave1HSM()
+        cfg = hsm.wave1_cfg
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_COUNTER, 0.0)
+
+        # Feed incomplete counter immediately
+        for i in range(10):
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(current=3, total=4, confidence=0.8),
+                compass=make_compass(),
+                current_time=0.05 * i,
+            )
+
+        # Should still be verifying before window expires
+        verify_window = cfg.verify_window_sec
+        assert hsm.state == Wave1State.VERIFY_COUNTER, \
+            f"VERIFY_COUNTER should still be active before {verify_window}s window expires"
+
+    def test_verify_counter_goes_to_obs_after_window_with_incomplete(self):
+        """VERIFY_COUNTER transitions to OBS_HAKI_SCAN after window expires and still incomplete."""
+        hsm = Wave1HSM()
+        cfg = hsm.wave1_cfg
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_COUNTER, 0.0)
+
+        verify_window = cfg.verify_window_sec
+
+        # Feed incomplete readings through the window
+        for i in range(20):
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(current=3, total=4, confidence=0.8),
+                compass=make_compass(),
+                current_time=verify_window + 0.1 + i * 0.1,
+            )
+
+        assert hsm.state in (Wave1State.OBS_HAKI_SCAN, Wave1State.CLEANUP_IF_NEEDED), \
+            f"VERIFY_COUNTER should transition to OBS_HAKI_SCAN after {verify_window}s window, got {hsm.state}"
+
+    def test_verify_counter_stays_in_verify_on_impossible_drop(self):
+        """VERIFY_COUNTER must not accept impossible counter reset (4/4 -> 0/4) during verify.
+
+        Feed exactly 2 reads of 4/4 (not enough for stable_clear), then a 0/4 flicker.
+        The impossible drop check should catch this and keep HSM in VERIFY_COUNTER.
+        """
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_COUNTER, 0.0)
+
+        # Only 2 reads of 4/4 (not enough for stability window of 3)
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=4, total=4, confidence=0.8),
+            compass=make_compass(),
+            current_time=0.0,
+        )
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=4, total=4, confidence=0.8),
+            compass=make_compass(),
+            current_time=0.1,
+        )
+
+        # Flicker: 0/4 (impossible — enemies can't respawn mid-wave)
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, total=4, confidence=0.8),
+            compass=make_compass(),
+            current_time=0.5,
+        )
+
+        # The impossible drop should be rejected, keeping HSM in VERIFY_COUNTER
+        assert hsm.state == Wave1State.VERIFY_COUNTER, \
+            f"VERIFY_COUNTER should not accept impossible 4/4 -> 0/4 drop, got {hsm.state}"

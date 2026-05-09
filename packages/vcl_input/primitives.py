@@ -64,6 +64,13 @@ class InputPrimitives:
         self._release_fn(key)
         self._held_keys.discard(key)
 
+    def press(self, key: str) -> None:
+        """Press a key down without releasing it."""
+        if self._stopped:
+            return
+        self._press_fn(key)
+        self._held_keys.add(key)
+
     def hold(self, key: str) -> None:
         """Hold a key down."""
         if self._stopped:

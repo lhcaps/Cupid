@@ -291,6 +291,34 @@ class Wave1HSM:
                     current_time,
                 )
 
+            # Reject impossible counter drops during verification.
+            # A 4/4 -> 0/4 transition without stage context is noise/flicker.
+            if progress and self._stability.is_impossible_drop(
+                progress.objective_current,
+                progress.objective_total,
+                progress.confidence if progress else 0.0,
+            ):
+                return self._emit_action_once(
+                    Wave1State.VERIFY_COUNTER,
+                    Wave1ActionName.WAIT,
+                    "rejected_impossible_drop",
+                    current_time,
+                )
+
+            # Only branch to OBS_HAKI_SCAN after giving the counter a chance to settle.
+            # A single bad read during post-Radiant-Kick verification should NOT force
+            # a cleanup cycle. Require the verification window to expire before declaring incomplete.
+            elapsed = current_time - self._state_entered_at
+            verify_window = self.wave1_cfg.verify_window_sec
+            if elapsed < verify_window:
+                return self._emit_action_once(
+                    Wave1State.VERIFY_COUNTER,
+                    Wave1ActionName.WAIT,
+                    f"verifying ({elapsed:.1f}s < {verify_window:.1f}s window)",
+                    current_time,
+                )
+
+            # Window expired: route to cleanup
             ok_incomplete, reason2 = guard_objective_incomplete(progress)
             if ok_incomplete:
                 self._transition_to(Wave1State.OBS_HAKI_SCAN, current_time)
@@ -310,14 +338,46 @@ class Wave1HSM:
             )
 
         if state == Wave1State.OBS_HAKI_SCAN:
-            elapsed = current_time - self._state_entered_at
-            if elapsed < self.config.observation_haki.scan_duration_ms / 1000.0:
-                return self._emit_action_once(
-                Wave1State.OBS_HAKI_SCAN,
-                Wave1ActionName.WAIT,
-                "haki_scan_active",
-                current_time,
+            # Update stability tracker during scan.
+            # If stable 4/4 appears, exit to ALIGN_TO_EXIT immediately.
+            self._stability.update(
+                progress.objective_current if progress else None,
+                progress.objective_total if progress else None,
+                progress.confidence if progress else None,
             )
+
+            # Reject impossible counter drops (e.g., 4/4 -> 0/4) during scan.
+            # If we previously saw high count and now see 0/4, treat as flicker/noise.
+            if progress and self._stability.is_impossible_drop(
+                progress.objective_current,
+                progress.objective_total,
+                progress.confidence if progress else 0.0,
+            ):
+                return self._emit_action_once(
+                    Wave1State.OBS_HAKI_SCAN,
+                    Wave1ActionName.WAIT,
+                    "rejected_impossible_drop",
+                    current_time,
+                )
+
+            if self._stability.is_stable_clear():
+                self._transition_to(Wave1State.ALIGN_TO_EXIT, current_time)
+                return self._emit_action_once(
+                    Wave1State.ALIGN_TO_EXIT,
+                    Wave1ActionName.ALIGN_COMPASS,
+                    "stable 4/4 during haki scan, exiting early",
+                    current_time,
+                )
+
+            elapsed = current_time - self._state_entered_at
+            scan_window = self.config.observation_haki.scan_duration_ms / 1000.0
+            if elapsed < scan_window:
+                return self._emit_action_once(
+                    Wave1State.OBS_HAKI_SCAN,
+                    Wave1ActionName.WAIT,
+                    "haki_scan_active",
+                    current_time,
+                )
             if self._cleanup_cycles < self.wave1_cfg.max_cleanup_cycles:
                 self._cleanup_cycles += 1
                 self._transition_to(Wave1State.CLEANUP_IF_NEEDED, current_time)
