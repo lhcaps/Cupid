@@ -24,13 +24,14 @@ class InputExecutor:
         self,
         config: AppConfig | None = None,
         stop_flag: Callable[[], bool] | None = None,
+        primitives: InputPrimitives | None = None,
     ) -> None:
         self.config = config or AppConfig()
         self.keybinds = self.config.keybinds
         self.wave1_cfg = self.config.wave1
         self.safety_cfg = self.config.safety
 
-        self._primitives = InputPrimitives(keybinds=self.keybinds)
+        self._primitives = primitives or InputPrimitives(keybinds=self.keybinds)
         self._cooldowns = CooldownTracker()
         self._stop_flag = stop_flag or (lambda: False)
         self._lock = threading.Lock()
@@ -113,6 +114,10 @@ class InputExecutor:
     def on_exception(self, exc: Exception) -> None:
         """Called on any exception during execution."""
         self.emergency_stop()
+
+    @property
+    def primitives(self) -> InputPrimitives:
+        return self._primitives
 
     @property
     def is_running(self) -> bool:

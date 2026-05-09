@@ -1,7 +1,7 @@
 """HSM transition guard functions."""
 from __future__ import annotations
 
-from vcl_core.schemas import GameState, ProgressState, CompassState, Wave1Action, Wave1ActionName
+from vcl_core.schemas import GameState, ProgressState, CompassState
 from vcl_core.config import Wave1Config, SafetyConfig
 
 
@@ -35,7 +35,6 @@ def guard_can_exit(
         WaveState.CLEANUP_IF_NEEDED,
         WaveState.VERIFY_COUNTER_AGAIN,
         WaveState.ALIGN_TO_EXIT,
-        WaveState.CHECK_NEXT_WAVE,
         WaveState.MOVE_NEXT_STAGE,
         WaveState.CONFIRM_STAGE_TRANSITION,
     )

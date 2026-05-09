@@ -1,10 +1,8 @@
-"""Progress UI Detector: parses wave panel and objective counter from top-right UI."""
+"""Progress UI Detector: parses wave panel and filled-circle counter from top-right UI."""
 from __future__ import annotations
 
-import re
 import cv2
 import numpy as np
-from typing import Literal
 
 from vcl_core.schemas import ProgressState
 from vcl_core.config import ProgressUIConfig
@@ -16,14 +14,17 @@ class ProgressDetector:
 
     From real video analysis (2560x1440):
     - Wave panel is a dark semi-transparent overlay at TOP-RIGHT
-    - Counter "x/4" appears within or just below the wave panel
-    - The wave panel has specific pixel patterns: wave_bright_ratio ~0.22 when active
-    - Counter is dark text rendered on dark background
+    - Counter renders as FILLED CIRCLES (not text "x/4")
+    - Filled circle (bright center) = enemy killed
+    - Unfilled circle (dark ring) = enemy alive
+    - Counter region: y=100-135, x=1340-1620 (TOP-RIGHT)
+    - Wave panel region: x=1300-1850, y=0-180
 
     Detection strategy:
-    1. Detect wave panel: crop top-right, check for active wave pattern (bright ratio > threshold)
-    2. Parse counter: find the "x/4" pattern within the wave panel using inverted thresholding
-    3. Never fake a 4/4 state — require high confidence
+    1. Detect wave panel: crop top-right, check for active wave pattern
+    2. Count filled circles: threshold bright regions, connected components,
+       filter for circular shapes (area 50-500px, aspect ratio 0.5-2.0)
+    3. Never fake 4/4 on low confidence
     """
 
     def __init__(self, config: ProgressUIConfig | None = None) -> None:
@@ -50,25 +51,33 @@ class ProgressDetector:
         if not panel_active:
             return ProgressState(confidence=0.0)
 
-        counter_data = self._parse_wave_counter(crop)
-        current = counter_data.get("current")
-        total = counter_data.get("total")
-        counter_conf = counter_data.get("confidence", 0.0)
+        circle_count, circle_conf = self._count_filled_circles(crop)
 
-        overall_conf = panel_conf * 0.3 + counter_conf * 0.7
-
-        if (current == 4 and total == 4) and overall_conf < cfg.min_confidence:
+        if circle_count is None:
             return ProgressState(
                 stage_name=cfg.stage_name,
+                dungeon_name=cfg.dungeon_name,
+                confidence=0.0,
+            )
+
+        objective_current = circle_count
+        objective_total = cfg.objective_total
+
+        overall_conf = round(panel_conf * 0.3 + circle_conf * 0.7, 3)
+
+        if objective_current == objective_total and overall_conf < cfg.min_confidence:
+            return ProgressState(
+                stage_name=cfg.stage_name,
+                dungeon_name=cfg.dungeon_name,
                 confidence=0.0,
             )
 
         return ProgressState(
             stage_name=cfg.stage_name,
             dungeon_name=cfg.dungeon_name,
-            objective_current=current,
-            objective_total=total,
-            confidence=round(overall_conf, 3),
+            objective_current=objective_current,
+            objective_total=objective_total,
+            confidence=overall_conf,
         )
 
     def _detect_wave_active(self, crop: np.ndarray) -> tuple[bool, float]:
@@ -80,7 +89,6 @@ class ProgressDetector:
         """
         cfg = self.config
 
-        # Crop the wave panel region
         panel_x = cfg.wave_panel_crop.x1 - cfg.crop.x1
         panel_y = cfg.wave_panel_crop.y1 - cfg.crop.y1
         panel_w = cfg.wave_panel_crop.x2 - cfg.wave_panel_crop.x1
@@ -100,7 +108,6 @@ class ProgressDetector:
 
         gray = cv2.cvtColor(panel_crop, cv2.COLOR_BGR2GRAY)
 
-        # Check bright pixels with multiple thresholds
         bright_counts = {}
         for thresh in [100, 120, 150, 180, 200]:
             _, bright = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
@@ -115,17 +122,22 @@ class ProgressDetector:
 
         return is_active, round(conf, 3)
 
-    def _parse_wave_counter(self, crop: np.ndarray) -> dict:
+    def _count_filled_circles(self, crop: np.ndarray) -> tuple[int | None, float]:
         """
-        Parse the "x/4" counter from the wave panel.
+        Count filled circles in the counter region.
 
-        The counter is rendered as dark text within the wave panel overlay.
-        Strategy: invert the crop and find the digit-like blobs.
-        The left digit (x) and right digit (4) are separated by a slash.
+        Filled circle (enemy killed): bright center, grayscale >80
+        Unfilled circle (enemy alive): dark ring, grayscale <60
+
+        Strategy:
+        1. Crop counter region
+        2. Grayscale + threshold at brightness=80
+        3. Connected components on bright regions
+        4. Filter for circular shapes: area 50-500px, aspect ratio 0.5-2.0
+        5. Count filled circles = objective_current
         """
         cfg = self.config
 
-        # Counter crop region
         counter_x = cfg.counter_crop.x1 - cfg.crop.x1
         counter_y = cfg.counter_crop.y1 - cfg.crop.y1
         counter_w = cfg.counter_crop.x2 - cfg.counter_crop.x1
@@ -139,125 +151,60 @@ class ProgressDetector:
         ch = counter_y2 - counter_y
 
         if cw <= 0 or ch <= 0:
-            return {"found": False, "current": None, "total": None, "confidence": 0.0}
+            return None, 0.0
 
         counter_crop = crop[counter_y:counter_y2, counter_x:counter_x2]
         if counter_crop.size == 0:
-            return {"found": False, "current": None, "total": None, "confidence": 0.0}
+            return None, 0.0
 
         gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
 
-        # The counter text is DARK on DARK background
-        # Use adaptive threshold to find text vs background
-        blur = cv2.GaussianBlur(gray, (3, 3), 0)
-        thresh_val, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        inv = 255 - binary
+        _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
 
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(inv, connectivity=8)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            binary, connectivity=4
+        )
 
-        blobs: list[dict] = []
+        candidates: list[dict] = []
         for i in range(1, num_labels):
             area = stats[i, cv2.CC_STAT_AREA]
-            if area < 8:
+            if area < 50 or area > 500:
                 continue
-            cx = int(centroids[i][0])
-            cy = int(centroids[i][1])
+
+            cx_rel = int(centroids[i][0])
+            cy_rel = int(centroids[i][1])
             cw_i = stats[i, cv2.CC_STAT_WIDTH]
             ch_i = stats[i, cv2.CC_STAT_HEIGHT]
-            aspect = cw_i / max(1, ch_i)
 
-            blobs.append({
-                "x": cx, "y": cy,
-                "w": cw_i, "h": ch_i,
+            if cw_i < 3 or ch_i < 3:
+                continue
+
+            aspect = cw_i / max(1, ch_i)
+            if not (0.5 <= aspect <= 2.0):
+                continue
+
+            candidates.append({
+                "x": cx_rel,
+                "y": cy_rel,
+                "w": cw_i,
+                "h": ch_i,
                 "area": area,
                 "aspect": aspect,
             })
 
-        blobs.sort(key=lambda b: b["x"])
+        filled_count = len(candidates)
 
-        if len(blobs) < 2:
-            return {"found": False, "current": None, "total": None, "confidence": 0.0}
+        if filled_count == 0:
+            return 0, 0.0
 
-        # Find the slash "/" between two digits
-        # The slash is a narrow vertical blob (aspect < 0.5)
-        current = None
-        total = None
-        slash_idx = None
+        avg_area = sum(c["area"] for c in candidates) / len(candidates)
+        area_score = min(1.0, avg_area / 150.0)
+        count_score = min(1.0, filled_count / cfg.objective_total)
+        shape_score = min(
+            1.0,
+            sum(1.0 - abs(1.0 - c["aspect"]) for c in candidates) / max(1, len(candidates)),
+        )
 
-        for i, blob in enumerate(blobs):
-            if blob["aspect"] < 0.5 and blob["area"] < 500:
-                slash_idx = i
-                break
+        conf = round(area_score * 0.4 + count_score * 0.3 + shape_score * 0.3, 3)
 
-        if slash_idx is not None and slash_idx > 0 and slash_idx < len(blobs) - 1:
-            left_blob = blobs[slash_idx - 1]
-            right_blob = blobs[slash_idx + 1]
-
-            left_area = left_blob["area"]
-            right_area = right_blob["area"]
-
-            # Estimate digit from area
-            # "0" is widest (area ~1500-2000)
-            # "4" is medium (area ~600-1000)
-            # "1" is narrow (area ~200-400)
-            # "2", "3" are medium (area ~400-1500)
-
-            # Heuristic: left blob is the current count, right blob is total (always 4)
-            # Total (4) is consistent: right blob should have area ~600-1200
-            if 300 < right_area < 1500:
-                total = 4
-                current = self._estimate_digit(left_area, left_blob["aspect"])
-
-            if total is not None and current is not None:
-                return {
-                    "found": True,
-                    "current": current,
-                    "total": total,
-                    "confidence": 0.80,
-                }
-
-        # Fallback: use area ratio between left and right halves
-        mid_x = cw // 2
-        left_area = sum(b["area"] for b in blobs if b["x"] < mid_x)
-        right_area = sum(b["area"] for b in blobs if b["x"] >= mid_x)
-
-        if left_area > 0 and right_area > 0:
-            ratio = left_area / right_area
-            if 1.0 < ratio < 3.5:
-                return {
-                    "found": True,
-                    "current": 0,
-                    "total": 4,
-                    "confidence": 0.60,
-                }
-            elif ratio >= 3.5:
-                return {
-                    "found": True,
-                    "current": 1,
-                    "total": 4,
-                    "confidence": 0.55,
-                }
-
-        return {"found": False, "current": None, "total": None, "confidence": 0.0}
-
-    def _estimate_digit(self, area: float, aspect: float) -> int | None:
-        """Estimate which digit (0-4) based on blob area."""
-        if aspect < 0.5:
-            return None  # This is a slash, not a digit
-
-        # Based on pixel analysis from real video:
-        # Large blob (~1500 area) = "0"
-        # Small blob (~200-400 area) = "1"
-        # Medium blob (~600-1200 area) = "4" (or 2, 3)
-        if area > 1200:
-            return 0
-        elif area > 800:
-            return 2
-        elif area > 400:
-            return 3
-        elif area > 200:
-            return 1
-        elif area > 50:
-            return 4
-
-        return None
+        return filled_count, conf

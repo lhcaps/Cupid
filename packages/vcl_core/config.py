@@ -59,8 +59,8 @@ class Wave1Config(BaseModel):
     geppo_interval_ms_min: int = 100
     geppo_interval_ms_max: int = 180
     aggro_wait_ms: int = 1000
-    radiant_kick_charge_ms: int = 1900
-    damage_register_wait_ms: int = 1600
+    radiant_kick_charge_ms: int = 2000
+    damage_register_wait_ms: int = 2200
     max_cleanup_cycles: int = 2
 
 

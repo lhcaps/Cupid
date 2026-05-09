@@ -31,37 +31,30 @@ class VideoReader:
         self.clock = Clock()
 
     def __iter__(self) -> Iterator[tuple[float, np.ndarray]]:
-        """Yield (timestamp_sec, frame) tuples."""
+        """Yield (timestamp_sec, frame) tuples using video timestamps."""
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        self.clock.reset()
         frame_idx = 0
         while True:
             ret, frame = self._cap.read()
             if not ret:
                 break
-            yield self.clock.now(), frame.copy()
+            yield frame_idx / self.fps, frame.copy()
             frame_idx += 1
 
     def iter_sampled(self, interval_sec: float = 1.0) -> Iterator[tuple[float, np.ndarray]]:
-        """Yield frames at fixed time intervals."""
+        """Yield frames at fixed time intervals using video seek."""
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        self.clock.reset()
-        next_sample = 0.0
-        frame_idx = 0
+        sample_idx = 0
         while True:
-            target_time = self.clock.now()
-            if target_time >= next_sample:
-                ret, frame = self._cap.read()
-                if not ret:
-                    break
-                yield target_time, frame.copy()
-                next_sample += interval_sec
-                frame_idx += 1
-            else:
-                skip_frames = int((next_sample - target_time) * self.fps)
-                if skip_frames > 0:
-                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx + skip_frames)
-                    frame_idx += skip_frames
+            target_frame = int(sample_idx * interval_sec * self.fps)
+            if target_frame >= self.frame_count:
+                break
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame = self._cap.read()
+            if not ret:
+                break
+            yield sample_idx * interval_sec, frame.copy()
+            sample_idx += 1
 
     def close(self) -> None:
         self._cap.release()

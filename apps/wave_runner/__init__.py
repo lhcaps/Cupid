@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import sys as _sys
-from os.path import dirname as _dn
+from os.path import dirname as _dn, abspath as _ap
 
-_ROOT = _dn(_dn(_dn(__file__)))
+_ROOT = _ap(_dn(_dn(_dn(__file__))))
 if _ROOT not in _sys.path:
     _sys.path.insert(0, _ROOT)
-del _sys, _dn, _ROOT
+del _sys, _dn, _ap, _ROOT
 
 from .main import app
 

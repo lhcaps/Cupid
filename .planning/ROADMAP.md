@@ -112,10 +112,11 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 
 ---
 
-### Phase 3 — Progress UI Detector (REWRITE REQUIRED)
+### Phase 3 — Progress UI Detector (CIRCLE FILL — COMPLETED)
 
 **Dependency:** Phase 2
-**Status:** IN PROGRESS — Rewrite needed (counter is circles, not text)
+**Status:** COMPLETED
+**Completed: 2026-05-09**
 **Tasks:**
 
 **P0: Rewrite counter detection (CIRCLE FILL METHOD)**
@@ -183,7 +184,8 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 ### Phase 5 — Wave 1 HSM (Offline Dry-Run)
 
 **Dependency:** Phase 3 + Phase 4
-**Status:** COMPLETED (verify circle detection integration)
+**Status:** COMPLETED + STABILIZED (2026-05-09)
+**Notes:** P0 runtime stabilization applied — see Phase P0 below.
 **Tasks:**
 1. Implement `vcl_hsm/states.py` — enum `Wave1State`:
    ```
@@ -278,6 +280,67 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 
 **Dependency:** Phase 7
 **Status:** COMPLETED (verify circle detection integration)
+
+---
+
+### Phase P0 — Wave 1 Runtime Stabilization & Verification Readiness
+
+**Dependency:** Phase 5 + Phase 6
+**Status:** COMPLETED (2026-05-09)
+**Goal:** Make Wave 1 runtime stable and ready for real 10-run verification.
+
+**Tasks completed:**
+1. P0.1 — Package imports reliable without PYTHONPATH (apps `__init__.py` sys.path fix)
+2. P0.2 — VideoReader timestamp uses `frame_idx / fps` (deterministic, no wall-clock)
+3. P0.3 — ProgressDetector rewritten to filled-circle counter (connected components)
+4. P0.4 — CounterStabilityTracker: requires 3 consecutive 4/4 reads before exit gate
+5. P0.5 — Wave1HSM is Wave 1 only; DONE after transition to The Forsaken Garden
+6. P0.6 — Damage-register wait: 2200ms after R release before VERIFY_COUNTER
+7. P0.7 — HSM actions are one-shot per state entry (all branches route through `_emit_action_once`)
+8. P0.8 — Shared InputPrimitives between executor and emergency stop
+9. P0.9 — Low-confidence hard pause in execute mode (releases keys)
+10. P0.10 — Compass treated as helper, graceful fallback on timeout
+11. P0.11 — Unit tests updated (37 tests, all passing)
+12. P0.12 — Replay analyzer stores deterministic timestamps + progress/compass output
+
+**Files changed:**
+- `packages/vcl_vision/frame_source.py`
+- `packages/vcl_vision/progress_detector.py`
+- `packages/vcl_hsm/stability.py` (new)
+- `packages/vcl_hsm/wave1_machine.py`
+- `packages/vcl_hsm/states.py`
+- `packages/vcl_hsm/transitions.py`
+- `packages/vcl_input/executor.py`
+- `packages/vcl_input/primitives.py`
+- `apps/wave_runner/main.py`
+- `apps/replay_analyzer/__init__.py`
+- `apps/wave_runner/__init__.py`
+- `configs/vision.1440p.yaml`
+- `configs/wave1.shattered_ramparts.yaml`
+- `configs/app.default.yaml`
+- `tests/test_progress_detector.py`
+- `tests/test_wave1_hsm.py`
+- `tests/test_input_safety.py` (new)
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `pytest tests/` → 37 passed
+- `python -m apps.replay_analyzer.main --help` → PASS
+- `python -m apps.wave_runner.main --help` → PASS
+- Replay smoke on `MedalTVRoblox20260509053121278-trim-1778279513526.mp4` → PASS (159 frames sampled, conf 0.30-0.83)
+- HSM dry-run on timeline → PASS (159 actions, final state FAILSAFE due to low confidence in video)
+
+**Known remaining risks:**
+- Counter detection confidence is low (0.30) on recorded video frames — likely needs frame timing/region tuning on live runs
+- HSM final state was FAILSAFE on dry-run (expected: video counter reads never met 0.75 confidence threshold)
+- Compass heading readings were unreliable (I/W/E fluctuating) — compass is treated as helper, not hard blocker
+- No live execute testing yet — readiness for 10-run verification depends on first live results
+
+**Next steps:**
+- Run assist mode first to validate low-confidence behavior on real gameplay
+- Tune `progress_ui.crop` / `progress_ui.counter_crop` based on assist mode feedback
+- If counter reads improve, run execute mode with fail-case logging
+- Progress to Phase 8 verification once assist confirms counter reads are stable
 **Tasks:**
 1. Run 10 Wave 1 execute attempts, collect JSONL logs
 2. Compute metrics:

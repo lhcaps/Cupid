@@ -144,7 +144,7 @@ def live(
     haki_det = HakiDetector(cfg.observation_haki)
 
     primitives = InputPrimitives(cfg.keybinds)
-    executor = InputExecutor(config=cfg)
+    executor = InputExecutor(config=cfg, primitives=primitives)
     estop = EmergencyStop(primitives=primitives, screenshot_dir="reports/failure_cases")
     estop.start()
     setup_ctrl_c_handler(primitives, on_stop=lambda: console.print("[red]Stopped by Ctrl+C[/red]"))
@@ -212,8 +212,19 @@ def live(
                         run_status = "fail"
                         break
 
-                    if progress.confidence < 0.7:
-                        console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} — pausing[/yellow]")
+                    low_confidence_states = (
+                        Wave1State.VERIFY_STAGE_UI,
+                        Wave1State.AGGRO_WITH_GEPPO,
+                        Wave1State.CAST_CHARGED_RADIANT_KICK,
+                        Wave1State.VERIFY_COUNTER,
+                        Wave1State.ALIGN_TO_EXIT,
+                        Wave1State.MOVE_NEXT_STAGE,
+                    )
+                    if mode == "execute" and hsm.state in low_confidence_states:
+                        if progress.confidence < cfg.progress_ui.min_confidence:
+                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} — pausing, releasing keys[/yellow]")
+                            executor.primitives.release_all_keys()
+                            continue
 
         except KeyboardInterrupt:
             run_status = "stopped"
