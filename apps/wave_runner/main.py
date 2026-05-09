@@ -228,7 +228,7 @@ def live(
                                 timestamp=elapsed,
                                 progress=progress_str,
                                 compass=compass.label,
-                                action=Wave1Action(name=Wave1ActionName.WAIT, reason="low_confidence_paused"),
+                                action=Wave1Action(name=Wave1ActionName.WAIT, reason="low_confidence_pre_hsm_pause"),
                                 progress_confidence=progress.confidence,
                                 compass_confidence=compass.confidence,
                             )
