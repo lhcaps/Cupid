@@ -92,6 +92,32 @@ class TestCaptureBackend:
         with pytest.raises(RuntimeError, match="dxcam.*not installed|not installed"):
             create_capture_backend("dxcam")
 
+    def test_dxcam_backend_uses_dxcam_create_api(self):
+        """DXCamCaptureBackend must use dxcam.create(), not dxcam.DXCam()."""
+        import inspect
+        from vcl_capture.backends import DXCamCaptureBackend
+        source = inspect.getsource(DXCamCaptureBackend.__init__)
+        # Must use dxcam.create
+        assert "dxcam.create" in source or "create(" in source, (
+            "DXCamCaptureBackend must use dxcam.create() API, not dxcam.DXCam()."
+        )
+        # Must NOT use deprecated dxcam.DXCam()
+        assert "DXCam()" not in source, (
+            "DXCamCaptureBackend must not use deprecated dxcam.DXCam(). Use dxcam.create()."
+        )
+
+    def test_dxcam_grab_passes_region_and_new_frame_only_false(self):
+        """DXCamCaptureBackend.grab() must pass region and new_frame_only=False."""
+        import inspect
+        from vcl_capture.backends import DXCamCaptureBackend
+        source = inspect.getsource(DXCamCaptureBackend.grab)
+        assert "new_frame_only" in source, (
+            "DXCamCaptureBackend.grab() must use new_frame_only=False."
+        )
+        assert "region=" in source or "region" in source, (
+            "DXCamCaptureBackend.grab() must pass region to grab()."
+        )
+
     def test_unknown_backend_raises_value_error(self):
         from vcl_capture.backends import create_capture_backend
         with pytest.raises(ValueError, match="Unknown capture backend"):
@@ -163,6 +189,43 @@ class TestFocusGuard:
         from vcl_input.window_focus import find_windows
         result = find_windows("NonExistentWindowXYZ123")
         assert isinstance(result, list)
+
+
+class TestPyDirectInputBackend:
+    """Tests for PyDirectInputBackend — must use pydirectinput-rgx, not pyautogui."""
+
+    def test_pydirectinput_backend_uses_real_directinput_not_pyautogui(self):
+        """PyDirectInputBackend must import pydirectinput-rgx (or pydirectinput), NOT pyautogui."""
+        import inspect
+        from vcl_input.backends import PyDirectInputBackend
+        source = inspect.getsource(PyDirectInputBackend.__init__)
+        # Must NOT contain pyautogui
+        assert "pyautogui" not in source.lower(), (
+            "PyDirectInputBackend must not import pyautogui. "
+            "It must use pydirectinput-rgx or pydirectinput."
+        )
+        # Must try pydirectinput_rgx
+        assert "pydirectinput" in source, (
+            "PyDirectInputBackend must import pydirectinput-rgx or pydirectinput."
+        )
+
+    def test_pydirectinput_factory_error_message_includes_install_hint(self):
+        """Factory error for pydirectinput must mention pip install pydirectinput-rgx."""
+        from vcl_input.backends import create_input_backend
+        from vcl_core.config import InputConfig
+        cfg = InputConfig(backend="pydirectinput")
+        import sys
+        from unittest.mock import patch
+
+        saved = {k: sys.modules.pop(k, None) for k in ["pydirectinput_rgx", "pydirectinput"]}
+        try:
+            with patch.dict(sys.modules, {"pydirectinput_rgx": None, "pydirectinput": None}):
+                with pytest.raises(RuntimeError, match="pip install pydirectinput-rgx"):
+                    create_input_backend(cfg)
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    sys.modules[k] = v
 
 
 class TestLiveFrameSource:

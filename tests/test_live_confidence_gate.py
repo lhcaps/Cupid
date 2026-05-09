@@ -208,44 +208,53 @@ class TestLiveConfidenceGateIntegration:
                         with patch(
                             "vcl_input.emergency_stop.setup_ctrl_c_handler"
                         ):
+                            # Mock window focus and input backend so preflight passes
                             with patch(
-                                "vcl_vision.frame_source.LiveFrameSource",
-                                MockLFS,
+                                "apps.wave_runner.main.ensure_window_focused",
+                                return_value=(True, "Mocked window"),
                             ):
                                 with patch(
-                                    "apps.wave_runner.main.ProgressDetector",
-                                    MockPD,
+                                    "apps.wave_runner.main.create_input_backend",
+                                    return_value=MagicMock(name="mock_input_backend"),
                                 ):
                                     with patch(
-                                        "apps.wave_runner.main.CompassDetector",
-                                        MockCD,
+                                        "vcl_vision.frame_source.LiveFrameSource",
+                                        MockLFS,
                                     ):
                                         with patch(
-                                            "apps.wave_runner.main.HakiDetector"
+                                            "apps.wave_runner.main.ProgressDetector",
+                                            MockPD,
                                         ):
                                             with patch(
-                                                "apps.wave_runner.main.Wave1HSM",
-                                                _PatchedWave1HSM,
+                                                "apps.wave_runner.main.CompassDetector",
+                                                MockCD,
                                             ):
                                                 with patch(
-                                                    "apps.wave_runner.main.RunLogger",
-                                                    MockLogger,
+                                                    "apps.wave_runner.main.HakiDetector"
                                                 ):
                                                     with patch(
-                                                        "apps.wave_runner.main.ReportGenerator"
+                                                        "apps.wave_runner.main.Wave1HSM",
+                                                        _PatchedWave1HSM,
                                                     ):
                                                         with patch(
-                                                            "apps.wave_runner.main.console",
-                                                            fake_console,
+                                                            "apps.wave_runner.main.RunLogger",
+                                                            MockLogger,
                                                         ):
-                                                            from apps.wave_runner.main import live
+                                                            with patch(
+                                                                "apps.wave_runner.main.ReportGenerator"
+                                                            ):
+                                                                with patch(
+                                                                    "apps.wave_runner.main.console",
+                                                                    fake_console,
+                                                                ):
+                                                                    from apps.wave_runner.main import live
 
-                                                            live(
-                                                                config=None,
-                                                                mode=mode,
-                                                                runs=1,
-                                                                stop_on_fail=True,
-                                                            )
+                                                                    live(
+                                                                        config=None,
+                                                                        mode=mode,
+                                                                        runs=1,
+                                                                        stop_on_fail=True,
+                                                                    )
 
         return {
             "tick_call_count": len(tick_tracking),

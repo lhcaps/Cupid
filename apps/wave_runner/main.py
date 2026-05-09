@@ -245,6 +245,12 @@ def live(
             ) as source:
                 console.print(f"  [dim]Capture backend: {source.backend_name}[/dim]")
 
+                # Create VisionDebug once per run, not per frame
+                vision_debugger: "VisionDebug | None" = None
+                if cfg.debug.vision:
+                    from vcl_vision.vision_debug import VisionDebug
+                    vision_debugger = VisionDebug(run_id, cfg.debug)
+
                 for ts, frame in source:
                     if estop.is_stopped:
                         run_status = "stopped"
@@ -266,10 +272,7 @@ def live(
                     )
 
                     # Debug vision: save crops on cadence
-                    if cfg.debug.vision and debug_info is not None:
-                        from vcl_vision.vision_debug import VisionDebug
-                        from vcl_vision.progress_detector import ProgressDebugInfo
-                        dbg = VisionDebug(run_id, cfg.debug)
+                    if vision_debugger is not None and debug_info is not None:
                         h, w = frame.shape[:2]
                         cfg_ = progress_det.config
                         x1, y1 = cfg_.crop.x1, cfg_.crop.y1
@@ -278,7 +281,7 @@ def live(
                         cx1, cy1 = cfg_.counter_crop.x1, cfg_.counter_crop.y1
                         cx2, cy2 = min(cfg_.counter_crop.x2, w), min(cfg_.counter_crop.y2, h)
                         cnt_crop = frame[cy1:cy2, cx1:cx2] if cx1 < cx2 and cy1 < cy2 else frame
-                        dbg.save_frame(
+                        vision_debugger.save_frame(
                             ts=elapsed,
                             frame=frame,
                             progress_crop=prog_crop,
@@ -401,7 +404,7 @@ def live(
         metrics.add_summary(summary)
 
         status_color = "green" if run_status == "clear" else "red" if run_status == "fail" else "yellow"
-        console.print(f"  [{status_color}]Run {run_idx+1} result: {run_status.upper()}/[{status_color}] | {duration:.1f}s")
+        console.print(f"  [{status_color}]Run {run_idx+1} result: {run_status.upper()}[/{status_color}] | {duration:.1f}s")
 
         if stop_on_fail and run_status != "clear":
             console.print("[yellow]Stopping on failure (--stop-on-fail)[/yellow]")
@@ -446,24 +449,31 @@ def _preflight_input(
 
     try:
         focused, msg = ensure_window_focused(title, require=False)
-        console.print(f"  [dim]{msg}[/dim]")
         if not focused and require:
             console.print(f"[red]  Window focus check FAILED: {msg}[/red]")
-            console.print("[yellow]  Proceeding anyway (fail_on_input_error controls input behavior)[/yellow]")
+            console.print("[red]  EXECUTE ABORTED: require_focus=true but window is not focused.[/red]")
+            console.print("[red]  Bring Roblox to foreground and retry, or use --no-input-preflight to skip.[/red]")
+            raise typer.Exit(code=2)
         elif focused:
-            console.print(f"  [green]  Window focus: OK[/green]")
+            console.print(f"  [green]Window focus: OK ({msg})[/green]")
+        else:
+            console.print(f"  [yellow]Window focus: {msg} (require_focus=false, proceeding)[/yellow]")
     except RuntimeError as e:
-        console.print(f"[yellow]  Window focus guard unavailable: {e}[/yellow]")
+        if require:
+            console.print(f"[red]  Window focus guard unavailable: {e}[/red]")
+            console.print("[red]  EXECUTE ABORTED: require_focus=true but PyWinCtl is not installed.[/red]")
+            console.print("[red]  Install with: pip install PyWinCtl[/red]")
+            raise typer.Exit(code=2)
+        console.print(f"  [yellow]Window focus skipped (PyWinCtl unavailable): {e}[/yellow]")
 
-    # Try dry-call input backend
+    # Validate input backend instantiation
     console.print(f"  [dim]Validating input backend: {cfg.input.backend}...[/dim]")
     try:
         backend = create_input_backend(cfg.input)
-        # No actual key press — just verify instantiation
-        console.print(f"  [green]  Input backend: {backend.name} (instantiated OK)[/green]")
+        console.print(f"  [green]Input backend: {backend.name} (instantiated OK)[/green]")
     except Exception as e:
         console.print(f"[red]  Input backend FAILED: {e}[/red]")
-        console.print("[yellow]  Proceeding anyway — fail_on_input_error controls runtime behavior[/yellow]")
+        raise typer.Exit(code=2)
 
 
 @app.command()

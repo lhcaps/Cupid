@@ -46,7 +46,7 @@ python -m apps.wave_runner.main live --mode assist
 python -m apps.wave_runner.main live --mode execute
 
 # Optional: install runtime backends for better game compatibility
-pip install ".[runtime]"   # dxcam + pyautogui
+pip install ".[runtime]"   # dxcam + pydirectinput-rgx + PyWinCtl + pyautogui
 pip install ".[yolo]"       # ultralytics + supervision
 
 # Optional: collect YOLO training frames
@@ -70,13 +70,18 @@ VCL uses pluggable backends for screen capture and keyboard input:
 | Backend | Install | Best For |
 |---------|---------|----------|
 | `pynput` (default) | Included | General keyboard input |
-| `pyautogui` | `pip install pyautogui` | DirectX games, SendInput() |
+| `pydirectinput` | `pip install ".[runtime]"` | **Roblox/DirectX games, SendInput+scan codes** |
+| `pyautogui` | `pip install ".[runtime]"` | General fallback |
 
 ### Window Focus Guard
 Before execute mode, VCL checks that the Roblox window is focused.
-Install PyWinCtl for automatic window management:
+Install PyWinCtl for automatic window management (included in `pip install ".[runtime]"`):
+
 ```bash
-pip install pywinctl
+# Manual keyboard test — prefer pydirectinput for Roblox/DirectX:
+python -m apps.wave_runner.main keyboard-test --input-backend pydirectinput  # first choice
+python -m apps.wave_runner.main keyboard-test --input-backend pyautogui    # fallback
+python -m apps.wave_runner.main keyboard-test --input-backend pynput        # general fallback
 ```
 
 ## Debug Vision

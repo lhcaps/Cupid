@@ -174,7 +174,7 @@ class TestProgressDetector:
             wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
         )
         # Use _make_active_wave_panel so panel_active=True
-        # _count_circles returns (None, 0.0) for 0 candidates, so we
+        # _count_circles returns (None, 0.0, 0) for 0 candidates, so we
         # expect text detection path or low confidence
         panel = _make_active_wave_panel(width=550, height=180)
         counter = _make_counter_crop(filled=0, unfilled=4)
@@ -186,6 +186,49 @@ class TestProgressDetector:
         # 0 candidates in circle path + no text detection -> confidence=0
         assert result.objective_current is None or result.objective_current == 0
         assert result.confidence < 0.75  # not high enough to gate
+
+    def test_candidate_count_is_nonzero_for_valid_circle_fixture(self):
+        """ProgressDebugInfo.candidate_count should be nonzero when circles are detected."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+        )
+        panel = _make_wave_panel(width=550, height=180)
+        counter = _make_counter_crop(filled=4, unfilled=0)
+        frame = _make_full_frame(counter, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        _, debug_info = det.detect_with_debug(frame)
+
+        # Circle mode should report actual candidate count
+        if debug_info.selected_mode == "circle":
+            assert debug_info.candidate_count > 0, (
+                f"candidate_count should be > 0 for valid circle fixture. "
+                f"Got {debug_info.candidate_count}. "
+                f"_count_circles must return a 3-tuple with candidate_count."
+            )
+
+    def test_candidate_count_is_zero_for_blank_counter(self):
+        """ProgressDebugInfo.candidate_count should be 0 when no circles are found."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+        )
+        panel = _make_active_wave_panel(width=550, height=180)
+        # Blank counter: no circles at all
+        counter = np.zeros((40, 420, 3), dtype=np.uint8)
+        frame = _make_full_frame(counter, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        _, debug_info = det.detect_with_debug(frame)
+
+        assert debug_info.candidate_count == 0, (
+            f"candidate_count should be 0 for blank counter. Got {debug_info.candidate_count}."
+        )
 
     def test_circle_3_4_returns_current_3(self):
         """Three filled circles should return objective_current=3."""

@@ -501,10 +501,63 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 
 **Next steps:**
 1. `python -m apps.wave_runner.main live --mode assist --debug-vision` — diagnose counter reads
-2. `python -m apps.wave_runner.main keyboard-test --input-backend pyautogui` — verify Roblox key receipt
-3. `python -m apps.wave_runner.main live --mode execute --input-backend pyautogui --capture-backend dxcam --debug-input --debug-vision` — first real live run
+2. `python -m apps.wave_runner.main keyboard-test --input-backend pydirectinput` — verify Roblox key receipt (prefer pydirectinput first)
+3. `python -m apps.wave_runner.main live --mode execute --input-backend pydirectinput --capture-backend dxcam --debug-input --debug-vision` — first real live run
 4. Tune `progress_ui.counter_crop` if reads are unstable
 5. Collect 10-run metrics; tune `verify_window_sec`
+
+### Phase P0.9 — Runtime Backend Correctness Hotfix
+
+**Dependency:** Phase P0.8
+**Status:** COMPLETED
+
+**Goal:** Fix P0.8 implementation bugs found during review — backends were architecturally correct but had API/import errors.
+
+**Tasks completed:**
+1. **PyDirectInputBackend** — Now imports `pydirectinput-rgx` first, falls back to `pydirectinput`, does NOT import `pyautogui`. Error message says `pip install pydirectinput-rgx`.
+2. **pyproject.toml** — Fixed `[project.optional-dependencies]` with `dxcam[cv2,winrt]`, `pydirectinput-rgx`, `pyautogui`, `PyWinCtl`. `pip install ".[runtime]"` works.
+3. **DXCamCaptureBackend** — Now uses `dxcam.create()` with `output_idx=max(0, monitor_index-1)` and `output_color=BGR`. `grab()` passes `region` and `new_frame_only=False`. Returns RuntimeError on `None` frame.
+4. **Focus preflight** — Now aborts with `typer.Exit(code=2)` when `require_focus=true` and window focus fails or PyWinCtl is missing. No more "proceeding anyway" on failed focus.
+5. **Rich status tag** — Fixed closing bracket from `/[{status_color}]` to `[/{status_color}]`.
+6. **VisionDebug** — Moved instantiation outside the frame loop (created once per run, not per frame).
+7. **ProgressDebugInfo.candidate_count** — `_count_circles()` now returns 3-tuple `(count, conf, candidate_count)`. `candidate_count` is now the actual number of geometric candidates found, not always 0.
+
+**Key design decisions:**
+- Focus guard abort (not warn-and-proceed) is correct for game macro safety
+- `pydirectinput-rgx` preferred over `pyautogui` for DirectX/Roblox input
+- 3-tuple return from `_count_circles` keeps public API stable while adding debug value
+
+**Files changed:**
+- `packages/vcl_input/backends.py` — PyDirectInputBackend imports pydirectinput-rgx, not pyautogui
+- `pyproject.toml` — PEP 621 optional-dependencies with correct packages
+- `packages/vcl_capture/backends.py` — DXCamCaptureBackend uses dxcam.create(), passes region, new_frame_only=False
+- `apps/wave_runner/main.py` — Focus preflight aborts on failure, Rich tag fixed, VisionDebug moved outside loop
+- `packages/vcl_vision/progress_detector.py` — _count_circles returns 3-tuple with candidate_count
+- `tests/test_backends.py` — New tests for PyDirectInputBackend source inspection, DXcam API, factory error message
+- `tests/test_progress_detector.py` — New tests for candidate_count nonzero/zero
+- `tests/test_live_confidence_gate.py` — Added mocks for ensure_window_focused and create_input_backend in preflight
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `python -m pytest tests/test_backends.py tests/test_progress_detector.py` → 40 passed
+- `python -m pytest tests/test_calibrate_regions.py tests/test_input_safety.py` → 18 passed
+- `python -m apps.wave_runner.main --help` → PASS
+- `python -m apps.wave_runner.main live --help` → PASS
+- `python -m apps.wave_runner.main keyboard-test --help` → PASS
+- `python tools/collect_yolo_frames.py --help` → PASS
+- `python tools/organize_yolo_dataset.py --help` → PASS
+- `python -m compileall apps packages tools` → PASS
+
+**Known remaining risks:**
+- Live game verification still pending — unit tests pass, real execution untested
+- Counter crop regions may need tuning on live runs
+- DXcam + pydirectinput real-world behavior unverified
+
+**Next steps:**
+1. `pip install ".[runtime]"` — install all runtime backends
+2. `python -m apps.wave_runner.main live --mode assist --capture-backend dxcam --debug-vision` — diagnose counter reads with DXcam
+3. `python -m apps.wave_runner.main keyboard-test --input-backend pydirectinput` — verify Roblox key receipt
+4. `python -m apps.wave_runner.main live --mode execute --input-backend pydirectinput --capture-backend dxcam --debug-input --debug-vision` — first real execute run
 
 ### Phase 8 — Wave 1 MVP Verification & Polish
 

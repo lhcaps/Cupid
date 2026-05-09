@@ -72,7 +72,7 @@ class ProgressDetector:
         circle_result = self._count_circles(crop)
         text_result = self._count_text(crop)
 
-        circle_count, circle_conf = circle_result
+        circle_count, circle_conf, candidate_count = circle_result
         text_count, text_conf = text_result
 
         panel_active_circle, panel_conf_circle = self._detect_panel(crop, mode="circle")
@@ -87,7 +87,7 @@ class ProgressDetector:
                 text_conf=0.0,
                 panel_active=panel_active_circle,
                 panel_conf=panel_conf_circle,
-                candidate_count=candidate_count if (circle_result and len(circle_result) > 2) else 0,
+                candidate_count=candidate_count,
                 raw_confidence=0.0,
             )
             if not panel_active_circle:
@@ -206,15 +206,14 @@ class ProgressDetector:
     # Circle counter (fullscreen mode)
     # ------------------------------------------------------------------
 
-    def _count_circles(self, crop: np.ndarray) -> tuple[int | None, float]:
+    def _count_circles(self, crop: np.ndarray) -> tuple[int | None, float, int]:
         """
         Count filled circles in counter region.
         Filled = bright center (enemy killed), unfilled = dark ring (alive).
 
-        Returns (count, confidence).
-        Returns (0, 0.90) ONLY when panel is active AND circle candidates were
-        searched but none found. High-confidence 0/4 requires active panel.
-        The panel-active check is done at the detect() level, not here.
+        Returns (count, confidence, candidate_count).
+        candidate_count is the number of geometric candidates found (before min cap).
+        Returns (None, 0.0, 0) when no candidates are found.
         """
         cfg = self.config
 
@@ -231,11 +230,11 @@ class ProgressDetector:
         ch = counter_y2 - counter_y
 
         if cw <= 0 or ch <= 0:
-            return None, 0.0
+            return None, 0.0, 0
 
         counter_crop = crop[counter_y:counter_y2, counter_x:counter_x2]
         if counter_crop.size == 0:
-            return None, 0.0
+            return None, 0.0, 0
 
         gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
         _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
@@ -262,9 +261,10 @@ class ProgressDetector:
             candidates.append({"area": area, "w": sw, "h": sh, "aspect": aspect})
 
         if not candidates:
-            return None, 0.0
+            return None, 0.0, 0
 
         count = min(len(candidates), cfg.objective_total)
+        candidate_count = len(candidates)
 
         avg_area = sum(c["area"] for c in candidates) / len(candidates)
         area_score = min(1.0, avg_area / 150.0)
@@ -275,7 +275,7 @@ class ProgressDetector:
         )
         conf = round(area_score * 0.4 + count_score * 0.3 + shape_score * 0.3, 3)
 
-        return count, conf
+        return count, conf, candidate_count
 
     # ------------------------------------------------------------------
     # Text counter (windowed/non-fullscreen mode)

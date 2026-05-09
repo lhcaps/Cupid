@@ -61,24 +61,41 @@ class PynputInputBackend(InputBackend):
 
 class PyDirectInputBackend(InputBackend):
     """
-    pydirectinput-based input backend.
-    Uses SendInput() + scan codes for DirectX/game compatibility.
+    DirectInput-compatible input backend using pydirectinput-rgx.
 
-    Requires: pip install pyautogui
+    Uses SendInput() + scan codes for DirectX/game compatibility.
+    Tries pydirectinput-rgx first (better DirectInput coverage), then pydirectinput.
+
+    Requires: pip install pydirectinput-rgx
+              or pip install pydirectinput
     """
 
     name = "pydirectinput"
 
     def __init__(self) -> None:
-        pyautogui = __import__("pyautogui")
-        self._pyautogui = pyautogui
-        self._pyautogui.FAILSAFE = False
+        pdi = None
+        try:
+            import pydirectinput_rgx as pdi
+        except ImportError:
+            try:
+                import pydirectinput as pdi
+            except ImportError:
+                raise RuntimeError(
+                    "pydirectinput backend selected but neither pydirectinput-rgx "
+                    "nor pydirectinput is installed. "
+                    "Install with: pip install pydirectinput-rgx"
+                ) from None
+        self._pdi = pdi
+        try:
+            self._pdi.FAILSAFE = False
+        except AttributeError:
+            pass
 
     def press(self, key: str) -> None:
-        self._pyautogui.keyDown(key)
+        self._pdi.keyDown(key)
 
     def release(self, key: str) -> None:
-        self._pyautogui.keyUp(key)
+        self._pdi.keyUp(key)
 
     def close(self) -> None:
         pass
@@ -123,13 +140,7 @@ def create_input_backend(config: InputConfig | None = None) -> InputBackend:
         return PynputInputBackend()
 
     if name == "pydirectinput":
-        try:
-            return PyDirectInputBackend()
-        except ImportError:
-            raise RuntimeError(
-                "pydirectinput backend selected but pyautogui is not installed. "
-                "Install with: pip install pyautogui"
-            )
+        return PyDirectInputBackend()
 
     if name == "pyautogui":
         try:

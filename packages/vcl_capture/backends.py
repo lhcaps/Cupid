@@ -57,7 +57,7 @@ class DXCamCaptureBackend(CaptureBackend):
     DXcam-based screen capture using Windows Desktop Duplication API.
     Low-latency, high-FPS, ideal for full-screen Direct3D applications.
 
-    Requires: pip install dxcam
+    Requires: pip install "dxcam[cv2,winrt]"
     """
 
     name = "dxcam"
@@ -69,28 +69,31 @@ class DXCamCaptureBackend(CaptureBackend):
         output_color: str = "BGR",
         fps_target: int = 20,
     ) -> None:
-        dxcam = __import__("dxcam", fromlist=["DXCam"])
-        self._cam = dxcam.DXCam()
+        dxcam = __import__("dxcam", fromlist=["create"])
+        self._cam = dxcam.create(
+            output_idx=max(0, monitor_index - 1),
+            output_color=output_color,
+        )
         self._region = region
         self._output_color = output_color
         self._fps_target = fps_target
 
         info = self._cam.get_monitors_info()
-        if not info:
-            raise RuntimeError("DXcam found no monitors.")
-        target = info[min(monitor_index, len(info) - 1)]
-        self.width = int(target.get("width", 1920))
-        self.height = int(target.get("height", 1080))
+        if info:
+            target = info[min(monitor_index - 1, len(info) - 1)]
+            self.width = int(target.get("width", 1920))
+            self.height = int(target.get("height", 1080))
+        else:
+            self.width = 1920
+            self.height = 1080
 
     def grab(self) -> np.ndarray:
-        import cv2
-        frame = self._cam.grab()
+        frame = self._cam.grab(region=self._region, new_frame_only=False)
         if frame is None:
-            raise RuntimeError("DXcam grab() returned None — capture may have stopped.")
-        if self._output_color == "BGR":
-            return frame
-        if self._output_color == "RGB":
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            raise RuntimeError(
+                "DXcam grab() returned None. "
+                "Ensure Roblox window is visible and not minimized."
+            )
         return frame
 
     def close(self) -> None:
@@ -133,11 +136,13 @@ def create_capture_backend(
                 output_color=output_color,
                 fps_target=fps_target,
             )
-        except ImportError:
-            raise RuntimeError(
-                "DXcam backend selected but dxcam is not installed. "
-                "Install with: pip install dxcam"
-            )
+        except (ImportError, ModuleNotFoundError) as exc:
+            if "dxcam" in str(exc):
+                raise RuntimeError(
+                    "DXcam backend selected but dxcam is not installed. "
+                    "Install with: pip install \"dxcam[cv2,winrt]\""
+                ) from None
+            raise
 
     raise ValueError(f"Unknown capture backend: {backend!r}. Use 'mss' or 'dxcam'.")
 
