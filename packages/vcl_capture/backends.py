@@ -81,11 +81,14 @@ class DXCamCaptureBackend(CaptureBackend):
         self.width = getattr(self._cam, "width", 1920)
         self.height = getattr(self._cam, "height", 1080)
 
+        # Must call start() before get_latest_frame() returns valid frames.
+        self._cam.start()
+
     def grab(self) -> np.ndarray:
         frame = self._cam.get_latest_frame()
         if frame is None:
             raise RuntimeError(
-                "DXcam grab() returned None. "
+                "DXcam get_latest_frame() returned None. "
                 "Ensure Roblox window is visible and not minimized."
             )
         return frame
