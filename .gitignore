@@ -42,6 +42,7 @@ logs/
 reports/run_logs/
 reports/debug_videos/
 reports/failure_cases/
+reports/vision_debug/
 
 # Video files (too large for git)
 *.mp4
@@ -52,7 +53,9 @@ reports/failure_cases/
 datasets/raw_videos/frames/
 datasets/frames/
 
-# Cached analysis
+models/
+datasets/yolo_raw/
+datasets/yolo_dataset/
 *.cache
 .pyright/
 

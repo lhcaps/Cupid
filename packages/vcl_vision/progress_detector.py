@@ -3,9 +3,24 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from dataclasses import dataclass
 
 from vcl_core.schemas import ProgressState
 from vcl_core.config import ProgressUIConfig
+
+
+@dataclass
+class ProgressDebugInfo:
+    """Structured debug info from progress detection."""
+    selected_mode: str | None
+    circle_count: int | None
+    circle_conf: float
+    text_count: int | None
+    text_conf: float
+    panel_active: bool
+    panel_conf: float
+    candidate_count: int
+    raw_confidence: float
 
 
 class ProgressDetector:
@@ -28,6 +43,12 @@ class ProgressDetector:
         self.config = config or ProgressUIConfig()
 
     def detect(self, frame: np.ndarray) -> ProgressState:
+        state, _ = self.detect_with_debug(frame)
+        return state
+
+    def detect_with_debug(
+        self, frame: np.ndarray
+    ) -> tuple[ProgressState, ProgressDebugInfo]:
         h, w = frame.shape[:2]
         cfg = self.config
 
@@ -38,72 +59,113 @@ class ProgressDetector:
         crop = frame[y1:y2, x1:x2]
 
         if crop.size == 0:
-            return ProgressState(confidence=0.0)
+            debug = ProgressDebugInfo(
+                selected_mode=None,
+                circle_count=None, circle_conf=0.0,
+                text_count=None, text_conf=0.0,
+                panel_active=False, panel_conf=0.0,
+                candidate_count=0,
+                raw_confidence=0.0,
+            )
+            return ProgressState(confidence=0.0), debug
 
-        # Detect which mode based on crop contents
         circle_result = self._count_circles(crop)
         text_result = self._count_text(crop)
 
-        # Prefer circle if found, else text
         circle_count, circle_conf = circle_result
         text_count, text_conf = text_result
 
+        panel_active_circle, panel_conf_circle = self._detect_panel(crop, mode="circle")
+        panel_active_text, panel_conf_text = self._detect_panel(crop, mode="text")
+
         if circle_count is not None:
-            panel_active, panel_conf = self._detect_panel(crop, mode="circle")
-            if not panel_active:
+            debug = ProgressDebugInfo(
+                selected_mode="circle",
+                circle_count=circle_count,
+                circle_conf=circle_conf,
+                text_count=None,
+                text_conf=0.0,
+                panel_active=panel_active_circle,
+                panel_conf=panel_conf_circle,
+                candidate_count=candidate_count if (circle_result and len(circle_result) > 2) else 0,
+                raw_confidence=0.0,
+            )
+            if not panel_active_circle:
+                debug.raw_confidence = 0.0
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
                     confidence=0.0,
-                )
-            overall = round(panel_conf * 0.3 + circle_conf * 0.7, 3)
-            # Always report objective_current; confidence gate only affects confidence
-            if overall < cfg.min_confidence:
+                ), debug
+
+            raw_conf = round(panel_conf_circle * 0.3 + circle_conf * 0.7, 3)
+            debug.raw_confidence = raw_conf
+            if raw_conf < cfg.min_confidence:
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
                     objective_current=circle_count,
                     objective_total=cfg.objective_total,
                     confidence=0.0,
-                )
+                ), debug
             return ProgressState(
                 stage_name=cfg.stage_name,
                 dungeon_name=cfg.dungeon_name,
                 objective_current=circle_count,
                 objective_total=cfg.objective_total,
-                confidence=overall,
-            )
+                confidence=raw_conf,
+            ), debug
 
         if text_count is not None:
-            panel_active, panel_conf = self._detect_panel(crop, mode="text")
-            if not panel_active:
+            debug = ProgressDebugInfo(
+                selected_mode="text",
+                circle_count=None, circle_conf=0.0,
+                text_count=text_count,
+                text_conf=text_conf,
+                panel_active=panel_active_text,
+                panel_conf=panel_conf_text,
+                candidate_count=0,
+                raw_confidence=0.0,
+            )
+            if not panel_active_text:
+                debug.raw_confidence = 0.0
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
                     confidence=0.0,
-                )
-            overall = round(panel_conf * 0.3 + text_conf * 0.7, 3)
-            if overall < cfg.min_confidence:
+                ), debug
+
+            raw_conf = round(panel_conf_text * 0.3 + text_conf * 0.7, 3)
+            debug.raw_confidence = raw_conf
+            if raw_conf < cfg.min_confidence:
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
                     objective_current=text_count,
                     objective_total=cfg.objective_total,
                     confidence=0.0,
-                )
+                ), debug
             return ProgressState(
                 stage_name=cfg.stage_name,
                 dungeon_name=cfg.dungeon_name,
                 objective_current=text_count,
                 objective_total=cfg.objective_total,
-                confidence=overall,
-            )
+                confidence=raw_conf,
+            ), debug
 
+        debug = ProgressDebugInfo(
+            selected_mode=None,
+            circle_count=None, circle_conf=0.0,
+            text_count=None, text_conf=0.0,
+            panel_active=False, panel_conf=0.0,
+            candidate_count=0,
+            raw_confidence=0.0,
+        )
         return ProgressState(
             stage_name=cfg.stage_name,
             dungeon_name=cfg.dungeon_name,
             confidence=0.0,
-        )
+        ), debug
 
     # ------------------------------------------------------------------
     # Panel active detection
@@ -122,10 +184,8 @@ class ProgressDetector:
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
         if mode == "text":
-            # Bright background behind dark text: pixels > 60 are the panel BG
             _, binary = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
             bright_pct = np.sum(binary > 0) / binary.size
-            # Panel BG should be ~50-95% bright
             is_active = 0.3 < bright_pct < 0.97
             conf = min(1.0, bright_pct * 1.5) if is_active else 0.0
             return is_active, round(conf, 3)
@@ -150,6 +210,11 @@ class ProgressDetector:
         """
         Count filled circles in counter region.
         Filled = bright center (enemy killed), unfilled = dark ring (alive).
+
+        Returns (count, confidence).
+        Returns (0, 0.90) ONLY when panel is active AND circle candidates were
+        searched but none found. High-confidence 0/4 requires active panel.
+        The panel-active check is done at the detect() level, not here.
         """
         cfg = self.config
 
@@ -175,7 +240,7 @@ class ProgressDetector:
         gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
         _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
 
-        num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(
             binary, connectivity=4
         )
 
@@ -197,7 +262,7 @@ class ProgressDetector:
             candidates.append({"area": area, "w": sw, "h": sh, "aspect": aspect})
 
         if not candidates:
-            return 0, 0.90
+            return None, 0.0
 
         count = min(len(candidates), cfg.objective_total)
 
@@ -255,8 +320,6 @@ class ProgressDetector:
 
         gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
 
-        # Dark text on bright BG: threshold at ~60-80 to isolate text
-        # Try multiple thresholds for robustness
         best_result: tuple | None = None
 
         for text_thresh in [60, 70, 80, 90, 100, 110, 120]:
@@ -291,7 +354,6 @@ class ProgressDetector:
             if len(digit_candidates) < 2:
                 continue
 
-            # Group by y into top/bottom rows
             mid_y = ch / 2
             top_row = [d for d in digit_candidates if d["y"] < mid_y]
             bot_row = [d for d in digit_candidates if d["y"] >= mid_y]
@@ -302,31 +364,25 @@ class ProgressDetector:
             top_row.sort(key=lambda d: d["x"])
             bot_row.sort(key=lambda d: d["x"])
 
-            # Bottom row: largest digit = denominator ("4")
-            # Top row: numerator digit ("0", "1", "2", "3")
-            # Width encodes the digit: 0→large, 1→thin, 2-3→medium
-
             def width_to_digit(w: int, h: int) -> int | None:
                 aspect = w / max(1, h)
                 if aspect < 0.3:
-                    return 1  # thin vertical bar
+                    return 1
                 if w <= 12:
                     return 1
                 if w <= 20:
-                    return None  # uncertain
+                    return None
                 if w <= 30:
                     return 2
                 if w <= 45:
                     return 3
                 return 4
 
-            # Parse numerator from top row
             numerator: int | None = None
             if top_row:
                 widest_top = max(top_row, key=lambda d: d["w"])
                 numerator = width_to_digit(widest_top["w"], widest_top["h"])
 
-            # Infer from bottom row and total
             if bot_row:
                 widest_bot = max(bot_row, key=lambda d: d["w"])
                 bot_digit = width_to_digit(widest_bot["w"], widest_bot["h"])
@@ -334,16 +390,9 @@ class ProgressDetector:
                 if numerator is not None:
                     result_count = numerator
                 else:
-                    # Use bottom row width to guess current
-                    # Bot "4" is typically 25-40px wide in reference
-                    # If bot_digit == 4, try to infer numerator from area ratio
                     total_w = sum(d["w"] for d in bot_row)
                     if total_w > 50:
-                        # likely "4"
-                        if numerator is None:
-                            result_count = 0
-                        else:
-                            result_count = numerator
+                        result_count = 0
                     else:
                         result_count = 0
 

@@ -22,6 +22,8 @@ from vcl_hsm import Wave1HSM, Wave1State
 from vcl_input.primitives import InputPrimitives
 from vcl_input.executor import InputExecutor
 from vcl_input.emergency_stop import EmergencyStop, setup_ctrl_c_handler
+from vcl_input.backends import create_input_backend, LoggingInputBackend
+from vcl_input.window_focus import ensure_window_focused, get_active_window_title
 from vcl_eval.metrics import RunMetrics, compute_metrics
 from vcl_eval.report import ReportGenerator
 
@@ -151,18 +153,52 @@ def live(
     mode: Annotated[Literal["assist", "execute"], typer.Option("--mode", "-m")] = "assist",
     runs: Annotated[int, typer.Option(help="Number of runs")] = 1,
     stop_on_fail: Annotated[bool, typer.Option(help="Stop runner on first failure")] = True,
+    capture_backend: Annotated[str | None, typer.Option("--capture-backend")] = None,
+    input_backend: Annotated[str | None, typer.Option("--input-backend")] = None,
+    debug_input: Annotated[bool, typer.Option("--debug-input/--no-debug-input")] = False,
+    debug_vision: Annotated[bool, typer.Option("--debug-vision/--no-debug-vision")] = False,
+    input_preflight: Annotated[bool, typer.Option("--input-preflight/--no-input-preflight")] = True,
 ) -> None:
     """
     Run Wave 1 live: assist (print actions) or execute (press keys).
 
-    Mode 'assist': prints suggested action only, no key presses.
-    Mode 'execute': runs full HSM loop with key presses. REQUIRES explicit --mode execute flag.
+    ASSIST MODE:  prints suggested action only, no key presses. Safe for diagnosis.
+    EXECUTE MODE: runs full HSM loop with key presses. REQUIRES explicit --mode execute flag.
+
+    Runtime backend flags:
+      --capture-backend [mss|dxcam]   : Screen capture backend (default: mss)
+      --input-backend [pynput|pydirectinput|pyautogui] : Keyboard backend (default: pynput)
+      --debug-input                     : Log executor queue, held keys, backend name
+      --debug-vision                    : Save crop snapshots to reports/vision_debug/
+      --input-preflight                 : Validate input backend before live loop (execute mode default: true)
     """
     cfg = _load_config(config)
-    console.print(Panel.fit(
-        f"[bold cyan]Wave 1 Live Runner[/bold cyan] | Mode: [yellow]{mode.upper()}[/yellow]",
-        border_style="cyan",
-    ))
+
+    # Apply CLI overrides
+    if capture_backend is not None:
+        cfg.capture.backend = capture_backend
+    if input_backend is not None:
+        cfg.input.backend = input_backend
+    if debug_input:
+        cfg.debug.input = True
+    if debug_vision:
+        cfg.debug.vision = True
+
+    if mode == "assist":
+        console.print(Panel.fit(
+            "[bold cyan]ASSIST MODE[/bold cyan] — [yellow]NO KEYPRESSES[/yellow], "
+            "HSM/vision diagnosis only. Safe to run anytime.",
+            border_style="cyan",
+        ))
+        _print_runtime_info(cfg, mode)
+    else:
+        console.print(Panel.fit(
+            "[bold red]EXECUTE MODE[/bold red] — [yellow]REAL KEYPRESSES WILL BE SENT.[/yellow] "
+            "Ensure Roblox window is focused.",
+            border_style="red",
+        ))
+        _print_runtime_info(cfg, mode)
+        _preflight_input(cfg, console, input_preflight, mode)
 
     progress_det = ProgressDetector(cfg.progress_ui)
     compass_det = CompassDetector(cfg.compass)
@@ -198,8 +234,17 @@ def live(
             Wave1State.MOVE_NEXT_STAGE,
         )
 
+        prev_state: str | None = None
+
         try:
-            with LiveFrameSource(monitor_index=1, fps_target=cfg.screen.fps_target) as source:
+            with LiveFrameSource(
+                monitor_index=cfg.capture.monitor_index,
+                fps_target=cfg.capture.fps_target,
+                region=cfg.capture.region.to_dict() if cfg.capture.region else None,
+                backend=cfg.capture.backend,
+            ) as source:
+                console.print(f"  [dim]Capture backend: {source.backend_name}[/dim]")
+
                 for ts, frame in source:
                     if estop.is_stopped:
                         run_status = "stopped"
@@ -208,9 +253,10 @@ def live(
                     elapsed = time.monotonic() - start_time
                     if elapsed > 60.0:
                         console.print("[yellow]Run timeout: 60s[/yellow]")
+                        run_status = "fail"
                         break
 
-                    progress = progress_det.detect(frame)
+                    progress, debug_info = progress_det.detect_with_debug(frame)
                     compass = compass_det.detect(frame)
 
                     progress_str = (
@@ -219,13 +265,54 @@ def live(
                         else "?"
                     )
 
-                    # Confidence gate: in execute mode, block key presses when vision is uncertain
-                    # but always let HSM tick so it can track state
+                    # Debug vision: save crops on cadence
+                    if cfg.debug.vision and debug_info is not None:
+                        from vcl_vision.vision_debug import VisionDebug
+                        from vcl_vision.progress_detector import ProgressDebugInfo
+                        dbg = VisionDebug(run_id, cfg.debug)
+                        h, w = frame.shape[:2]
+                        cfg_ = progress_det.config
+                        x1, y1 = cfg_.crop.x1, cfg_.crop.y1
+                        x2, y2 = min(cfg_.crop.x2, w), min(cfg_.crop.y2, h)
+                        prog_crop = frame[y1:y2, x1:x2] if x1 < x2 and y1 < y2 else frame
+                        cx1, cy1 = cfg_.counter_crop.x1, cfg_.counter_crop.y1
+                        cx2, cy2 = min(cfg_.counter_crop.x2, w), min(cfg_.counter_crop.y2, h)
+                        cnt_crop = frame[cy1:cy2, cx1:cx2] if cx1 < cx2 and cy1 < cy2 else frame
+                        dbg.save_frame(
+                            ts=elapsed,
+                            frame=frame,
+                            progress_crop=prog_crop,
+                            counter_crop=cnt_crop,
+                            debug_info={
+                                "mode": debug_info.selected_mode,
+                                "candidates": debug_info.candidate_count,
+                                "circle_count": debug_info.circle_count,
+                                "circle_conf": debug_info.circle_conf,
+                                "text_count": debug_info.text_count,
+                                "text_conf": debug_info.text_conf,
+                                "panel_active": debug_info.panel_active,
+                                "panel_conf": debug_info.panel_conf,
+                                "raw_confidence": debug_info.raw_confidence,
+                                "objective_current": progress.objective_current,
+                                "objective_total": progress.objective_total,
+                                "progress_confidence": progress.confidence,
+                            },
+                        )
+
                     low_conf = progress.confidence < cfg.progress_ui.min_confidence
                     in_risky = hsm.state in RISKY_STATES
 
                     if mode == "execute" and low_conf and in_risky:
-                        console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} < {cfg.progress_ui.min_confidence:.2f} in risky state — releasing keys[/yellow]")
+                        console.print(
+                            f"  [yellow]!! Low conf {progress.confidence:.2f} < "
+                            f"{cfg.progress_ui.min_confidence:.2f} in risky state "
+                            f"[{hsm.state.value}] — releasing keys[/yellow]"
+                        )
+                        if cfg.debug.input:
+                            console.print(
+                                f"    [dim]executor queue={len(executor._queue)} "
+                                f"held={sorted(primitives.held_keys)}[/dim]"
+                            )
                         executor.primitives.release_held_keys()
                         logger.log(
                             state=hsm.state.value,
@@ -236,7 +323,6 @@ def live(
                             progress_confidence=progress.confidence,
                             compass_confidence=compass.confidence,
                         )
-                        # Advance executor so held keys get released
                         executor.tick()
                         continue
 
@@ -246,6 +332,15 @@ def live(
                         compass=compass,
                         current_time=elapsed,
                     )
+
+                    # Debug input: log executor state on non-WAIT actions
+                    if cfg.debug.input and action.name != Wave1ActionName.WAIT:
+                        console.print(
+                            f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
+                            f"[INPUT DEBUG] action={action.name.value} "
+                            f"queue={len(executor._queue)} "
+                            f"held={sorted(primitives.held_keys)}"
+                        )
 
                     console.print(
                         f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
@@ -266,9 +361,12 @@ def live(
                     if mode == "execute":
                         executor.execute(action.name)
 
-                    # CRITICAL: tick executor every frame so non-blocking actions advance
                     if mode == "execute":
                         executor.tick()
+
+                    # State transition debug snapshot
+                    if cfg.debug.vision and hsm.state.value != prev_state:
+                        prev_state = hsm.state.value
 
                     if hsm.state == Wave1State.DONE:
                         run_status = "clear"
@@ -303,7 +401,7 @@ def live(
         metrics.add_summary(summary)
 
         status_color = "green" if run_status == "clear" else "red" if run_status == "fail" else "yellow"
-        console.print(f"  [{status_color}]Run {run_idx+1} result: {run_status.upper()}[/{status_color}] | {duration:.1f}s")
+        console.print(f"  [{status_color}]Run {run_idx+1} result: {run_status.upper()}/[{status_color}] | {duration:.1f}s")
 
         if stop_on_fail and run_status != "clear":
             console.print("[yellow]Stopping on failure (--stop-on-fail)[/yellow]")
@@ -313,6 +411,59 @@ def live(
     console.print("\n[cyan]--- Summary ---[/cyan]")
     reporter = ReportGenerator(console)
     reporter.print_summary(metrics)
+
+
+def _print_runtime_info(cfg: AppConfig, mode: str) -> None:
+    """Print configured runtime backends."""
+    console.print(f"  Capture backend : {cfg.capture.backend}")
+    console.print(f"  Input backend   : {cfg.input.backend}")
+    console.print(f"  Focus window   : {cfg.input.focus_window_title!r}")
+    console.print(f"  Require focus  : {cfg.input.require_focus}")
+    console.print(f"  Fail on error  : {cfg.input.fail_on_input_error}")
+    if mode == "execute":
+        console.print(f"  Debug input    : {cfg.debug.input}")
+    console.print(f"  Debug vision   : {cfg.debug.vision}")
+
+
+def _preflight_input(
+    cfg: AppConfig,
+    console: Console,
+    preflight_enabled: bool,
+    mode: str,
+) -> None:
+    """Preflight check: validate window focus and input backend before live loop."""
+    if mode == "assist":
+        console.print("[dim]  [SKIP] Preflight not required in assist mode[/dim]")
+        return
+
+    if not preflight_enabled:
+        console.print("[dim]  [SKIP] Preflight disabled[/dim]")
+        return
+
+    # Check window focus
+    title = cfg.input.focus_window_title
+    require = cfg.input.require_focus
+
+    try:
+        focused, msg = ensure_window_focused(title, require=False)
+        console.print(f"  [dim]{msg}[/dim]")
+        if not focused and require:
+            console.print(f"[red]  Window focus check FAILED: {msg}[/red]")
+            console.print("[yellow]  Proceeding anyway (fail_on_input_error controls input behavior)[/yellow]")
+        elif focused:
+            console.print(f"  [green]  Window focus: OK[/green]")
+    except RuntimeError as e:
+        console.print(f"[yellow]  Window focus guard unavailable: {e}[/yellow]")
+
+    # Try dry-call input backend
+    console.print(f"  [dim]Validating input backend: {cfg.input.backend}...[/dim]")
+    try:
+        backend = create_input_backend(cfg.input)
+        # No actual key press — just verify instantiation
+        console.print(f"  [green]  Input backend: {backend.name} (instantiated OK)[/green]")
+    except Exception as e:
+        console.print(f"[red]  Input backend FAILED: {e}[/red]")
+        console.print("[yellow]  Proceeding anyway — fail_on_input_error controls runtime behavior[/yellow]")
 
 
 @app.command()
@@ -327,32 +478,44 @@ def report(
 
 
 @app.command()
-def keyboard_test() -> None:
-    """Test keyboard input primitives (for manual verification)."""
-    console.print("[yellow]Keyboard test — press keys to test, Ctrl+C to exit[/yellow]")
-    primitives = InputPrimitives()
+def keyboard_test(
+    input_backend: Annotated[str | None, typer.Option("--input-backend")] = None,
+) -> None:
+    """
+    Test keyboard input backend (for manual verification).
+
+    This will press real keys. Ensure Roblox is focused before running.
+    Use --input-backend to select: pynput (default), pydirectinput, pyautogui
+    """
+    from vcl_input.backends import create_input_backend
+    from vcl_core.config import InputConfig
+
+    cfg = _load_config(None)
+    if input_backend is not None:
+        cfg.input.backend = input_backend
+
+    backend_name = cfg.input.backend
+    console.print(f"[yellow]Keyboard test — backend: {backend_name}[/yellow]")
+    console.print("[yellow]Press Ctrl+C to exit[/yellow]")
+
+    backend = create_input_backend(cfg.input)
+    console.print(f"  Backend: {backend.name}")
     keys_to_test = ["w", "a", "s", "d", "space", "r", "q", "e", "g", "j", "1", "2"]
-
-    def show_held():
-        console.print(f"  Held: {sorted(primitives.held_keys)}")
-
-    def on_stop():
-        console.print("[red]Stopped[/red]")
-
-    estop = EmergencyStop(primitives=primitives, on_stop=on_stop)
-    estop.start()
-    setup_ctrl_c_handler(primitives, on_stop=on_stop)
 
     console.print("[cyan]Test sequence:[/cyan]")
     for key in keys_to_test:
         console.print(f"  Tapping {key}...", end=" ")
-        primitives.tap(key, down_ms=200)
-        console.print("[green]OK[/green]")
-        show_held()
+        try:
+            backend.press(key)
+            time.sleep(0.15)
+            backend.release(key)
+            console.print("[green]OK[/green]")
+        except Exception as e:
+            console.print(f"[red]FAILED: {e}[/red]")
         time.sleep(0.3)
 
     console.print("[green]All keys tested successfully![/green]")
-    estop.stop()
+    backend.close()
 
 
 def _load_config(config: Path | None) -> AppConfig:

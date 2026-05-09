@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import cv2
-import mss
 import time
 import numpy as np
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Iterator
 
 from vcl_core.timebase import Clock
+from vcl_core.config import CaptureConfig
 
 
 class VideoReader:
@@ -78,15 +78,21 @@ class VideoReader:
 
 
 class LiveFrameSource:
-    """Captures frames from the live screen using mss."""
+    """
+    Captures frames from the live screen.
+
+    Supports pluggable backends (MSS default, DXcam for Windows/DirectX).
+    Preserves backward-compatible constructor: monitor_index, fps_target, region.
+    """
 
     def __init__(
         self,
         monitor_index: int = 1,
         fps_target: int = 20,
         region: dict | None = None,
+        backend: str | None = None,
     ) -> None:
-        self._sct = mss.mss()
+        self._backend_name = backend or "mss"
         self.monitor_index = monitor_index
         self.fps_target = fps_target
         self._interval_sec = 1.0 / fps_target
@@ -95,9 +101,25 @@ class LiveFrameSource:
         self.clock = Clock()
         self._stop_flag = False
 
-        monitor = self._sct.monitors[monitor_index]
-        self.width = monitor["width"]
-        self.height = monitor["height"]
+        from vcl_capture.backends import create_capture_backend
+        # Convert dict region to tuple for backend if provided
+        backend_region = None
+        if self._region is not None:
+            # dict format: {"left": x1, "top": y1, "width": w, "height": h}
+            r = self._region
+            backend_region = (r["left"], r["top"], r["left"] + r["width"], r["top"] + r["height"])
+        self._backend = create_capture_backend(
+            backend=backend,
+            monitor_index=monitor_index,
+            region=backend_region,
+            output_color="BGR",
+        )
+        self.width = self._backend.width
+        self.height = self._backend.height
+
+    @property
+    def backend_name(self) -> str:
+        return self._backend.name
 
     def __iter__(self) -> Iterator[tuple[float, np.ndarray]]:
         self._running = True
@@ -111,9 +133,7 @@ class LiveFrameSource:
             if self._stop_flag:
                 break
 
-            shot = self._sct.grab(self._region or self._sct.monitors[self.monitor_index])
-            frame = np.array(shot)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            frame = self._backend.grab()
             yield self.clock.now(), frame
 
     def stop(self) -> None:
@@ -122,7 +142,7 @@ class LiveFrameSource:
 
     def close(self) -> None:
         self._running = False
-        self._sct.close()
+        self._backend.close()
 
     def __enter__(self) -> "LiveFrameSource":
         return self

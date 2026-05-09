@@ -20,6 +20,7 @@ import numpy as np
 
 from vcl_core.schemas import ProgressState, CompassState, Wave1Action, Wave1ActionName
 from vcl_hsm import Wave1HSM, Wave1State
+from vcl_vision.progress_detector import ProgressDebugInfo
 
 
 def _fake_progress(
@@ -49,6 +50,7 @@ class _FakeLiveFrameSource:
     def __init__(self, frames):
         self._frames = list(frames)
         self._idx = 0
+        self.backend_name = "mss"
 
     def __iter__(self):
         self._idx = 0
@@ -156,6 +158,19 @@ class TestLiveConfidenceGateIntegration:
         # Fake detectors
         mock_pd = MagicMock()
         mock_pd.detect.return_value = progress
+        # detect_with_debug returns tuple: (ProgressState, ProgressDebugInfo)
+        mock_debug_info = ProgressDebugInfo(
+            selected_mode="circle",
+            candidate_count=0,
+            circle_count=progress.objective_current,
+            circle_conf=progress.confidence,
+            text_count=None,
+            text_conf=0.0,
+            panel_active=True,
+            panel_conf=0.8,
+            raw_confidence=progress.confidence,
+        )
+        mock_pd.detect_with_debug.return_value = (progress, mock_debug_info)
         MockPD = MagicMock(return_value=mock_pd)
 
         mock_cd = MagicMock()

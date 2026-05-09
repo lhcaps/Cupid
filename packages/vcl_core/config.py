@@ -35,6 +35,14 @@ class CropRegion(BaseModel):
     def to_slice(self) -> tuple[slice, slice]:
         return slice(self.y1, self.y2), slice(self.x1, self.x2)
 
+    def to_dict(self) -> dict:
+        return {
+            "left": self.x1,
+            "top": self.y1,
+            "width": self.x2 - self.x1,
+            "height": self.y2 - self.y1,
+        }
+
 
 class ProgressUIConfig(BaseModel):
     crop: CropRegion = Field(default_factory=lambda: CropRegion(x1=1300, y1=0, x2=1850, y2=180))
@@ -79,6 +87,45 @@ class SafetyConfig(BaseModel):
     save_failure_screenshot: bool = True
 
 
+class CaptureConfig(BaseModel):
+    backend: str = "mss"
+    monitor_index: int = 1
+    fps_target: int = 20
+    region: CropRegion | None = None
+    output_color: str = "BGR"
+
+
+class InputConfig(BaseModel):
+    backend: str = "pynput"
+    tap_delay_ms: int = 10
+    focus_window_title: str = "Roblox"
+    require_focus: bool = True
+    fail_on_input_error: bool = True
+
+
+class DebugConfig(BaseModel):
+    input: bool = False
+    vision: bool = False
+    save_every_n_frames: int = 20
+    output_dir: str = "reports/vision_debug"
+
+
+class YoloClasses(BaseModel):
+    enemy: int = 0
+    exit: int = 1
+    player: int = 2
+    progress_panel: int = 3
+    objective_counter: int = 4
+
+
+class YoloConfig(BaseModel):
+    enabled: bool = False
+    model_path: str = "models/cupid_wave1_yolo.pt"
+    confidence: float = 0.3
+    device: str = "auto"
+    classes: YoloClasses = Field(default_factory=YoloClasses)
+
+
 class AppConfig(BaseModel):
     screen: ScreenConfig = Field(default_factory=ScreenConfig)
     keybinds: KeybindsConfig = Field(default_factory=KeybindsConfig)
@@ -87,6 +134,10 @@ class AppConfig(BaseModel):
     wave1: Wave1Config = Field(default_factory=Wave1Config)
     observation_haki: ObservationHakiConfig = Field(default_factory=ObservationHakiConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    capture: CaptureConfig = Field(default_factory=CaptureConfig)
+    input: InputConfig = Field(default_factory=InputConfig)
+    debug: DebugConfig = Field(default_factory=DebugConfig)
+    yolo: YoloConfig = Field(default_factory=YoloConfig)
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -97,7 +148,9 @@ def load_config(path: str | Path) -> AppConfig:
 
     raw: dict[str, Any] = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
-    def _to_crop(data: list[int] | dict) -> CropRegion:
+    def _to_crop(data: list[int] | dict | None) -> CropRegion | None:
+        if data is None:
+            return None
         if isinstance(data, list) and len(data) == 4:
             return CropRegion(x1=data[0], y1=data[1], x2=data[2], y2=data[3])
         if isinstance(data, dict):
@@ -110,6 +163,7 @@ def load_config(path: str | Path) -> AppConfig:
         ("progress_ui", "counter_crop"),
         ("progress_ui", "wave_panel_crop"),
         ("compass", "crop"),
+        ("capture", "region"),
     ]:
         if section in cfg and key in cfg[section]:
             cfg[section][key] = _to_crop(cfg[section][key])

@@ -429,6 +429,87 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 - If counter reads are stable, run execute mode with `--stop-on-fail`
 - Collect 10-run metrics; tune `verify_window_sec` based on real counter behavior
 - Progress to Phase 8 (MVP Verification) once 9/10 clears achieved
+
+### Phase P0.8 — Runtime Backend Stabilization
+
+**Dependency:** Phase P0.7
+**Status:** COMPLETED
+**Goal:** Replace fragile hand-rolled runtime primitives with a pluggable backend architecture.
+
+**Tasks completed:**
+1. **CaptureConfig, InputConfig, DebugConfig, YoloConfig** added to `vcl_core/config.py`
+2. **Optional deps** added to `pyproject.toml`: `[runtime]` (dxcam, pyautogui), `[yolo]` (ultralytics, supervision)
+3. **packages/vcl_capture/** — New package with `CaptureBackend` interface (MSS, DXcam backends)
+4. **packages/vcl_input/backends.py** — `InputBackend` interface (Pynput, PyDirectInput, PyAutoGUI, Logging)
+5. **packages/vcl_input/window_focus.py** — PyWinCtl-based window focus guard
+6. **packages/vcl_vision/frame_source.py** — `LiveFrameSource` now delegates to `CaptureBackend`
+7. **packages/vcl_vision/progress_detector.py** — Fixed false high-confidence 0/4 bug; added `detect_with_debug()` + `ProgressDebugInfo`
+8. **packages/vcl_vision/vision_debug.py** — `VisionDebug` class for crop snapshots and state transitions
+9. **packages/vcl_vision/detections.py** — `DetectionBox`, `WorldDetections` normalized boxes
+10. **packages/vcl_vision/yolo_detector.py** — YOLO provider skeleton, lazy import, disabled by default
+11. **primitives.py** — Now uses `InputBackend`, `fail_on_input_error` control, no silent exception swallow
+12. **wave_runner/main.py** — Mode banners, CLI flags (`--capture-backend`, `--input-backend`, `--debug-input`, `--debug-vision`), focus preflight, debug logging
+13. **configs/app.default.yaml** + **configs/wave1.shattered_ramparts.yaml** — New sections for capture/input/debug/yolo
+14. **tools/collect_yolo_frames.py** — Frame capture CLI for YOLO dataset collection
+15. **tools/organize_yolo_dataset.py** — Train/val split and data.yaml generation
+
+**Key design decisions:**
+- HSM NOT rewritten; it remains the "brain", YOLO is an optional "eyes" provider
+- Backends lazy-imported to avoid hard dependency on optional packages
+- `fail_on_input_error: true` default raises on input backend errors
+- ProgressDetector no longer returns `(0, 0.90)` for blank crop — panel must be active first
+- Assist mode never sends keypresses; execute mode validates focus + backend first
+- `reports/vision_debug/` not committed to git
+
+**Files changed:**
+- `packages/vcl_core/config.py` — new config models
+- `pyproject.toml` — optional extras [runtime], [yolo]
+- `packages/vcl_capture/__init__.py` (new)
+- `packages/vcl_capture/backends.py` (new)
+- `packages/vcl_vision/frame_source.py` — CaptureBackend integration
+- `packages/vcl_vision/progress_detector.py` — confidence fix + debug
+- `packages/vcl_vision/vision_debug.py` (new)
+- `packages/vcl_vision/detections.py` (new)
+- `packages/vcl_vision/yolo_detector.py` (new)
+- `packages/vcl_vision/__init__.py` — exports new modules
+- `packages/vcl_input/backends.py` (new)
+- `packages/vcl_input/window_focus.py` (new)
+- `packages/vcl_input/primitives.py` — InputBackend integration
+- `packages/vcl_input/__init__.py` — exports new modules
+- `apps/wave_runner/main.py` — mode banners, CLI flags, focus preflight
+- `configs/app.default.yaml` — new sections
+- `configs/wave1.shattered_ramparts.yaml` — new sections
+- `README.md` — runtime backend documentation, YOLO tooling
+- `tests/test_backends.py` (new)
+- `tools/collect_yolo_frames.py` (new)
+- `tools/organize_yolo_dataset.py` (new)
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `python -m pytest tests/` → PASS (existing + new tests)
+- `python -m apps.wave_runner.main --help` → PASS
+- `python -m apps.wave_runner.main live --help` → PASS
+- `python tools/collect_yolo_frames.py --help` → PASS
+- `python tools/organize_yolo_dataset.py --help` → PASS
+- `python -m compileall apps packages tools` → PASS
+
+**Known remaining risks:**
+- Live game verification not possible in this environment — unit/simulation coverage only
+- Counter crop regions may need tuning on live runs
+- DXcam + pydirectinput tested via import-time checks only; real A/B comparison pending live execution
+- YOLO provider skeleton does not feed into HSM yet — future phase
+
+**Next steps:**
+1. `python -m apps.wave_runner.main live --mode assist --debug-vision` — diagnose counter reads
+2. `python -m apps.wave_runner.main keyboard-test --input-backend pyautogui` — verify Roblox key receipt
+3. `python -m apps.wave_runner.main live --mode execute --input-backend pyautogui --capture-backend dxcam --debug-input --debug-vision` — first real live run
+4. Tune `progress_ui.counter_crop` if reads are unstable
+5. Collect 10-run metrics; tune `verify_window_sec`
+
+### Phase 8 — Wave 1 MVP Verification & Polish
+
+**Dependency:** Phase P0.8
+**Status:** Pending
 **Tasks:**
 1. Run 10 Wave 1 execute attempts, collect JSONL logs
 2. Compute metrics:

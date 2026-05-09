@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import time
 import random
+import logging
 from typing import Callable
 
-from vcl_core.config import KeybindsConfig
+from vcl_core.config import KeybindsConfig, InputConfig
+
+logger = logging.getLogger(__name__)
 
 
 class InputPrimitives:
@@ -14,6 +17,9 @@ class InputPrimitives:
 
     All methods that interact with the OS keyboard go through here.
     Kept separate from executor logic for easy testing.
+
+    Supports pluggable backends. When no backend is provided, uses
+    pynput as the default. Backends can be injected for testing.
     """
 
     def __init__(
@@ -21,38 +27,46 @@ class InputPrimitives:
         keybinds: KeybindsConfig | None = None,
         press_fn: Callable[[str], None] | None = None,
         release_fn: Callable[[str], None] | None = None,
+        input_config: InputConfig | None = None,
+        backend=None,
     ) -> None:
         self.keybinds = keybinds or KeybindsConfig()
+        self._input_config = input_config or InputConfig()
         self._held_keys: set[str] = set()
         self._stopped = False
-        self._press_fn = press_fn or self._default_press
-        self._release_fn = release_fn or self._default_release
+        self._backend = backend
+
+        if press_fn is not None:
+            self._press_fn = press_fn
+            self._release_fn = release_fn or self._default_release
+        elif self._backend is not None:
+            self._press_fn = self._backend.press
+            self._release_fn = self._backend.release
+        else:
+            self._press_fn = self._default_press
+            self._release_fn = self._default_release
 
     def _default_press(self, key: str) -> None:
+        from vcl_input.backends import PynputInputBackend
+        if self._backend is None:
+            self._backend = PynputInputBackend()
         try:
-            import pynput
-            from pynput.keyboard import Controller, Key
-            c = Controller()
-            try:
-                k = getattr(Key, key, None) or Key._value_(key)
-            except Exception:
-                k = key
-            c.press(k)
-        except Exception:
-            pass
+            self._backend.press(key)
+        except Exception as exc:
+            if self._input_config.fail_on_input_error:
+                raise RuntimeError(f"InputBackend press failed for key {key!r}: {exc}") from exc
+            logger.warning("[INPUT] press(%r) failed silently: %s", key, exc)
 
     def _default_release(self, key: str) -> None:
+        from vcl_input.backends import PynputInputBackend
+        if self._backend is None:
+            self._backend = PynputInputBackend()
         try:
-            import pynput
-            from pynput.keyboard import Controller, Key
-            c = Controller()
-            try:
-                k = getattr(Key, key, None) or Key._value_(key)
-            except Exception:
-                k = key
-            c.release(k)
-        except Exception:
-            pass
+            self._backend.release(key)
+        except Exception as exc:
+            if self._input_config.fail_on_input_error:
+                raise RuntimeError(f"InputBackend release failed for key {key!r}: {exc}") from exc
+            logger.warning("[INPUT] release(%r) failed silently: %s", key, exc)
 
     def tap(self, key: str, down_ms: int = 80) -> None:
         """Press and release a key."""

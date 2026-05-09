@@ -12,5 +12,33 @@ del _sys, _dn, _PKGS
 from .primitives import InputPrimitives
 from .executor import InputExecutor
 from .emergency_stop import EmergencyStop
+from .backends import (
+    InputBackend,
+    PynputInputBackend,
+    PyDirectInputBackend,
+    PyAutoGUIInputBackend,
+    LoggingInputBackend,
+    create_input_backend,
+)
+from .window_focus import (
+    get_active_window_title,
+    find_windows,
+    activate_window,
+    ensure_window_focused,
+)
 
-__all__ = ["InputPrimitives", "InputExecutor", "EmergencyStop"]
+__all__ = [
+    "InputPrimitives",
+    "InputExecutor",
+    "EmergencyStop",
+    "InputBackend",
+    "PynputInputBackend",
+    "PyDirectInputBackend",
+    "PyAutoGUIInputBackend",
+    "LoggingInputBackend",
+    "create_input_backend",
+    "get_active_window_title",
+    "find_windows",
+    "activate_window",
+    "ensure_window_focused",
+]

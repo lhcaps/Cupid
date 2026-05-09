@@ -1,5 +1,36 @@
-# Wave 1 MVP Config — Shattered Ramparts at 2560x1440 (from MedalTV video analysis)
-# Updated crop regions based on actual gameplay video (MedalTVRoblox20260509053121278-trim.mp4)
+# Wave 1 MVP Config — Shattered Ramparts at 2560x1440
+# Runtime backends
+capture:
+  backend: "mss"
+  monitor_index: 1
+  fps_target: 20
+  region: null
+  output_color: "BGR"
+
+input:
+  backend: "pynput"
+  tap_delay_ms: 10
+  focus_window_title: "Roblox"
+  require_focus: true
+  fail_on_input_error: true
+
+debug:
+  input: false
+  vision: false
+  save_every_n_frames: 20
+  output_dir: "reports/vision_debug"
+
+yolo:
+  enabled: false
+  model_path: "models/cupid_wave1_yolo.pt"
+  confidence: 0.3
+  device: "auto"
+  classes:
+    enemy: 0
+    exit: 1
+    player: 2
+    progress_panel: 3
+    objective_counter: 4
 
 screen:
   width: 2560

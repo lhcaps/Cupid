@@ -52,3 +52,42 @@ safety:
   max_state_duration_sec: 15.0
   release_all_keys_on_stop: true
   save_failure_screenshot: true
+
+# Capture backend: mss (default) or dxcam (Windows/DirectX)
+# dxcam requires: pip install dxcam
+capture:
+  backend: "mss"
+  monitor_index: 1
+  fps_target: 20
+  region: null
+  output_color: "BGR"
+
+# Input backend: pynput (default), pydirectinput (DirectX/game), pyautogui (fallback)
+# pydirectinput/pyautogui require: pip install pyautogui
+input:
+  backend: "pynput"
+  tap_delay_ms: 10
+  focus_window_title: "Roblox"
+  require_focus: true
+  fail_on_input_error: true
+
+# Debug settings
+debug:
+  input: false
+  vision: false
+  save_every_n_frames: 20
+  output_dir: "reports/vision_debug"
+
+# YOLO detector (optional, disabled by default)
+# Enable with: pip install ".[yolo]"
+yolo:
+  enabled: false
+  model_path: "models/cupid_wave1_yolo.pt"
+  confidence: 0.3
+  device: "auto"
+  classes:
+    enemy: 0
+    exit: 1
+    player: 2
+    progress_panel: 3
+    objective_counter: 4

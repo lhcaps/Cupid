@@ -39,15 +39,81 @@ pytest tests/
 # Analyze a gameplay video
 python -m apps.replay_analyzer.main analyze --video path/to/video.mp4 --out reports/eval/
 
-# Assist mode (print actions, no key presses)
+# Assist mode (print actions, no key presses) — safe diagnosis
 python -m apps.wave_runner.main live --mode assist
 
 # Execute mode (full automation)
 python -m apps.wave_runner.main live --mode execute
 
+# Optional: install runtime backends for better game compatibility
+pip install ".[runtime]"   # dxcam + pyautogui
+pip install ".[yolo]"       # ultralytics + supervision
+
+# Optional: collect YOLO training frames
+python tools/collect_yolo_frames.py --out datasets/yolo_raw/run1 --duration-sec 60
+
 # Generate report
 python -m apps.wave_runner.main report --run-dir reports/run_logs
 ```
+
+## Runtime Backends
+
+VCL uses pluggable backends for screen capture and keyboard input:
+
+### Capture Backend (`--capture-backend`)
+| Backend | Install | Best For |
+|---------|---------|----------|
+| `mss` (default) | Included | General screen capture |
+| `dxcam` | `pip install dxcam` | Windows/DirectX games, low-latency |
+
+### Input Backend (`--input-backend`)
+| Backend | Install | Best For |
+|---------|---------|----------|
+| `pynput` (default) | Included | General keyboard input |
+| `pyautogui` | `pip install pyautogui` | DirectX games, SendInput() |
+
+### Window Focus Guard
+Before execute mode, VCL checks that the Roblox window is focused.
+Install PyWinCtl for automatic window management:
+```bash
+pip install pywinctl
+```
+
+## Debug Vision
+
+Save crop snapshots and detector overlays for diagnosis:
+
+```bash
+python -m apps.wave_runner.main live --mode assist --debug-vision
+# Saves to reports/vision_debug/<run_id>/
+#   - frame_<ts>.png          (full frame)
+#   - progress_crop_<ts>.png   (progress UI region)
+#   - counter_crop_<ts>.png   (circle counter region)
+#   - debug_<ts>.json        (detector debug metadata)
+```
+
+## YOLO Dataset Collection (Optional)
+
+Collect frames for future YOLO training:
+
+```bash
+# 1. Collect raw frames
+python tools/collect_yolo_frames.py --out datasets/yolo_raw/run1 --duration-sec 120 --fps 10
+
+# 2. Annotate with CVAT (export as YOLO format)
+
+# 3. Organize into train/val splits
+python tools/organize_yolo_dataset.py \
+    --images datasets/yolo_raw/run1/images \
+    --output datasets/yolo_dataset \
+    --split 0.8
+
+# 4. Train (when dataset is ready)
+# pip install ".[yolo]"
+# ultralytics train --data datasets/yolo_dataset/data.yaml ...
+```
+
+**Note:** YOLO is disabled by default. Set `yolo.enabled: true` in config to enable.
 
 ## Wave 1 Combat Flow
 

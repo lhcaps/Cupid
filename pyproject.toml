@@ -16,6 +16,14 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8.0.0", "ruff>=0.4.0"]
+runtime = [
+    "dxcam>=0.1.0",
+    "pyautogui>=0.9.54",
+]
+yolo = [
+    "ultralytics>=8.0.0",
+    "supervision>=0.20.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -31,7 +39,8 @@ ignore = ["D", "COM812", "ISC001"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["packages/vcl_core", "packages/vcl_vision", "packages/vcl_hsm",
-           "packages/vcl_input", "packages/vcl_eval", "apps/wave_runner"]
+           "packages/vcl_input", "packages/vcl_eval", "packages/vcl_capture",
+           "apps/wave_runner"]
 
 [tool.pytest]
 testpaths = ["tests"]
