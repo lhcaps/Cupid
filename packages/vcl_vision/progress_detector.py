@@ -1,4 +1,4 @@
-"""Progress UI Detector: parses wave panel and filled-circle counter from top-right UI."""
+"""Progress UI Detector: supports filled circles (fullscreen) and dark text counter (windowed)."""
 from __future__ import annotations
 
 import cv2
@@ -10,31 +10,24 @@ from vcl_core.config import ProgressUIConfig
 
 class ProgressDetector:
     """
-    Detects wave progress and objective counter from the top-right UI panel.
+    Detects wave progress from the Cupid progress UI.
 
-    From real video analysis (2560x1440):
-    - Wave panel is a dark semi-transparent overlay at TOP-RIGHT
-    - Counter renders as FILLED CIRCLES (not text "x/4")
-    - Filled circle (bright center) = enemy killed
-    - Unfilled circle (dark ring) = enemy alive
-    - Counter region: y=100-135, x=1340-1620 (TOP-RIGHT)
-    - Wave panel region: x=1300-1850, y=0-180
+    Two counter modes detected automatically:
+      - "circle": fullscreen — counter shows filled/empty circles
+      - "text":   windowed — counter shows dark text "0/4" on bright panel
 
-    Detection strategy:
-    1. Detect wave panel: crop top-right, check for active wave pattern
-    2. Count filled circles: threshold bright regions, connected components,
-       filter for circular shapes (area 50-500px, aspect ratio 0.5-2.0)
-    3. Never fake 4/4 on low confidence
+    Panel detection: find bright background behind UI (semi-transparent overlay)
+    Circle counter: threshold bright regions, count filled circles (bright center)
+    Text counter:  threshold dark regions, count digit shapes, infer current/total
+
+    Key insight: counter text is DARK (black/gray pixels), NOT bright.
+    Previous approach of thresholding bright pixels was wrong.
     """
 
     def __init__(self, config: ProgressUIConfig | None = None) -> None:
         self.config = config or ProgressUIConfig()
 
     def detect(self, frame: np.ndarray) -> ProgressState:
-        """
-        Analyze a full frame and return the progress state.
-        Returns ProgressState with low confidence if no wave is active.
-        """
         h, w = frame.shape[:2]
         cfg = self.config
 
@@ -47,94 +40,197 @@ class ProgressDetector:
         if crop.size == 0:
             return ProgressState(confidence=0.0)
 
-        panel_active, panel_conf = self._detect_wave_active(crop)
-        if not panel_active:
-            return ProgressState(confidence=0.0)
+        # Detect which mode based on crop contents
+        circle_result = self._count_circles(crop)
+        text_result = self._count_text(crop)
 
-        circle_count, circle_conf = self._count_filled_circles(crop)
+        # Prefer circle if found, else text
+        circle_count, circle_conf = circle_result
+        text_count, text_conf = text_result
 
-        if circle_count is None:
+        if circle_count is not None:
+            panel_active, panel_conf = self._detect_panel(crop, mode="circle")
+            if not panel_active:
+                return ProgressState(
+                    stage_name=cfg.stage_name,
+                    dungeon_name=cfg.dungeon_name,
+                    confidence=0.0,
+                )
+            overall = round(panel_conf * 0.3 + circle_conf * 0.7, 3)
+            # Always report objective_current; confidence gate only affects confidence
+            if overall < cfg.min_confidence:
+                return ProgressState(
+                    stage_name=cfg.stage_name,
+                    dungeon_name=cfg.dungeon_name,
+                    objective_current=circle_count,
+                    objective_total=cfg.objective_total,
+                    confidence=0.0,
+                )
             return ProgressState(
                 stage_name=cfg.stage_name,
                 dungeon_name=cfg.dungeon_name,
-                confidence=0.0,
+                objective_current=circle_count,
+                objective_total=cfg.objective_total,
+                confidence=overall,
             )
 
-        objective_current = circle_count
-        objective_total = cfg.objective_total
-
-        overall_conf = round(panel_conf * 0.3 + circle_conf * 0.7, 3)
-
-        if objective_current == objective_total and overall_conf < cfg.min_confidence:
+        if text_count is not None:
+            panel_active, panel_conf = self._detect_panel(crop, mode="text")
+            if not panel_active:
+                return ProgressState(
+                    stage_name=cfg.stage_name,
+                    dungeon_name=cfg.dungeon_name,
+                    confidence=0.0,
+                )
+            overall = round(panel_conf * 0.3 + text_conf * 0.7, 3)
+            if overall < cfg.min_confidence:
+                return ProgressState(
+                    stage_name=cfg.stage_name,
+                    dungeon_name=cfg.dungeon_name,
+                    objective_current=text_count,
+                    objective_total=cfg.objective_total,
+                    confidence=0.0,
+                )
             return ProgressState(
                 stage_name=cfg.stage_name,
                 dungeon_name=cfg.dungeon_name,
-                confidence=0.0,
+                objective_current=text_count,
+                objective_total=cfg.objective_total,
+                confidence=overall,
             )
 
         return ProgressState(
             stage_name=cfg.stage_name,
             dungeon_name=cfg.dungeon_name,
-            objective_current=objective_current,
-            objective_total=objective_total,
-            confidence=overall_conf,
+            confidence=0.0,
         )
 
-    def _detect_wave_active(self, crop: np.ndarray) -> tuple[bool, float]:
-        """
-        Detect if the wave panel is active (visible) in the crop.
+    # ------------------------------------------------------------------
+    # Panel active detection
+    # ------------------------------------------------------------------
 
-        The wave panel shows ~22% bright pixels when active, 0% when inactive.
-        Uses multiple thresholds to handle different UI rendering modes.
+    def _detect_panel(self, crop: np.ndarray, mode: str) -> tuple[bool, float]:
+        """
+        Detect if progress UI panel is active (visible) in crop.
+
+        For circle mode: look for bright filled circles (background panel)
+        For text mode: look for dark text on bright panel background
+        """
+        if crop.size == 0:
+            return False, 0.0
+
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+        if mode == "text":
+            # Bright background behind dark text: pixels > 60 are the panel BG
+            _, binary = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
+            bright_pct = np.sum(binary > 0) / binary.size
+            # Panel BG should be ~50-95% bright
+            is_active = 0.3 < bright_pct < 0.97
+            conf = min(1.0, bright_pct * 1.5) if is_active else 0.0
+            return is_active, round(conf, 3)
+
+        else:  # circle mode
+            bright_counts = {}
+            for thresh in [100, 120, 150, 180, 200]:
+                _, bright = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+                bright_counts[thresh] = np.sum(bright > 0) / bright.size
+
+            max_ratio = max(bright_counts.values())
+            avg_ratio = sum(bright_counts.values()) / len(bright_counts)
+            conf = min(1.0, max_ratio * 3 + avg_ratio * 2)
+            is_active = max_ratio > 0.02
+            return is_active, round(conf, 3)
+
+    # ------------------------------------------------------------------
+    # Circle counter (fullscreen mode)
+    # ------------------------------------------------------------------
+
+    def _count_circles(self, crop: np.ndarray) -> tuple[int | None, float]:
+        """
+        Count filled circles in counter region.
+        Filled = bright center (enemy killed), unfilled = dark ring (alive).
         """
         cfg = self.config
 
-        panel_x = cfg.wave_panel_crop.x1 - cfg.crop.x1
-        panel_y = cfg.wave_panel_crop.y1 - cfg.crop.y1
-        panel_w = cfg.wave_panel_crop.x2 - cfg.wave_panel_crop.x1
-        panel_h = cfg.wave_panel_crop.y2 - cfg.wave_panel_crop.y1
+        counter_x = cfg.counter_crop.x1 - cfg.crop.x1
+        counter_y = cfg.counter_crop.y1 - cfg.crop.y1
+        counter_w = cfg.counter_crop.x2 - cfg.counter_crop.x1
+        counter_h = cfg.counter_crop.y2 - cfg.counter_crop.y1
 
-        panel_x = max(0, panel_x)
-        panel_y = max(0, panel_y)
-        panel_x2 = min(panel_x + panel_w, crop.shape[1])
-        panel_y2 = min(panel_y + panel_h, crop.shape[0])
+        counter_x = max(0, counter_x)
+        counter_y = max(0, counter_y)
+        counter_x2 = min(counter_x + counter_w, crop.shape[1])
+        counter_y2 = min(counter_y + counter_h, crop.shape[0])
+        cw = counter_x2 - counter_x
+        ch = counter_y2 - counter_y
 
-        if panel_x2 <= panel_x or panel_y2 <= panel_y:
-            return False, 0.0
+        if cw <= 0 or ch <= 0:
+            return None, 0.0
 
-        panel_crop = crop[panel_y:panel_y2, panel_x:panel_x2]
-        if panel_crop.size == 0:
-            return False, 0.0
+        counter_crop = crop[counter_y:counter_y2, counter_x:counter_x2]
+        if counter_crop.size == 0:
+            return None, 0.0
 
-        gray = cv2.cvtColor(panel_crop, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
 
-        bright_counts = {}
-        for thresh in [100, 120, 150, 180, 200]:
-            _, bright = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
-            bright_counts[thresh] = np.sum(bright > 0) / bright.size
+        num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+            binary, connectivity=4
+        )
 
-        max_ratio = max(bright_counts.values())
-        avg_ratio = sum(bright_counts.values()) / len(bright_counts)
+        candidates = []
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < 50 or area > 2000:
+                continue
 
-        conf = min(1.0, max_ratio * 3 + avg_ratio * 2)
+            sw = stats[i, cv2.CC_STAT_WIDTH]
+            sh = stats[i, cv2.CC_STAT_HEIGHT]
+            if sw < 3 or sh < 3:
+                continue
 
-        is_active = max_ratio > 0.02
+            aspect = sw / max(1, sh)
+            if not (0.5 <= aspect <= 2.0):
+                continue
 
-        return is_active, round(conf, 3)
+            candidates.append({"area": area, "w": sw, "h": sh, "aspect": aspect})
 
-    def _count_filled_circles(self, crop: np.ndarray) -> tuple[int | None, float]:
+        if not candidates:
+            return 0, 0.90
+
+        count = min(len(candidates), cfg.objective_total)
+
+        avg_area = sum(c["area"] for c in candidates) / len(candidates)
+        area_score = min(1.0, avg_area / 150.0)
+        count_score = min(1.0, count / cfg.objective_total)
+        shape_score = min(
+            1.0,
+            sum(1.0 - abs(1.0 - c["aspect"]) for c in candidates) / max(1, len(candidates)),
+        )
+        conf = round(area_score * 0.4 + count_score * 0.3 + shape_score * 0.3, 3)
+
+        return count, conf
+
+    # ------------------------------------------------------------------
+    # Text counter (windowed/non-fullscreen mode)
+    # ------------------------------------------------------------------
+
+    def _count_text(self, crop: np.ndarray) -> tuple[int | None, float]:
         """
-        Count filled circles in the counter region.
+        Count dark text digit shapes in counter region to infer current objective.
 
-        Filled circle (enemy killed): bright center, grayscale >80
-        Unfilled circle (enemy alive): dark ring, grayscale <60
+        The "0 / 4" counter shows:
+          - Dark text on bright panel background
+          - Multiple digit shapes separated by slashes/spaces
+          - Row y~490 has all digit clusters
 
         Strategy:
-        1. Crop counter region
-        2. Grayscale + threshold at brightness=80
-        3. Connected components on bright regions
-        4. Filter for circular shapes: area 50-500px, aspect ratio 0.5-2.0
-        5. Count filled circles = objective_current
+          1. Invert threshold: find DARK pixels (text is black/gray)
+          2. Connected components on dark regions
+          3. Filter for small compact shapes (digit candidates)
+          4. Row-based grouping: top row = numerator, bottom row = denominator
+          5. Infer current from numerator digit(s) width
         """
         cfg = self.config
 
@@ -159,55 +255,109 @@ class ProgressDetector:
 
         gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
 
-        _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
+        # Dark text on bright BG: threshold at ~60-80 to isolate text
+        # Try multiple thresholds for robustness
+        best_result: tuple | None = None
 
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            binary, connectivity=4
-        )
+        for text_thresh in [60, 70, 80, 90, 100, 110, 120]:
+            _, binary = cv2.threshold(gray, text_thresh, 255, cv2.THRESH_BINARY_INV)
 
-        candidates: list[dict] = []
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area < 50 or area > 500:
+            num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+                binary, connectivity=8
+            )
+
+            digit_candidates = []
+            for i in range(1, num_labels):
+                area = stats[i, cv2.CC_STAT_AREA]
+                if area < 10 or area > 2000:
+                    continue
+
+                cx_rel = int(centroids[i][0])
+                cy_rel = int(centroids[i][1])
+                sw = stats[i, cv2.CC_STAT_WIDTH]
+                sh = stats[i, cv2.CC_STAT_HEIGHT]
+                if sw < 3 or sh < 5:
+                    continue
+
+                aspect = sw / max(1, sh)
+                if aspect > 3.0:
+                    continue
+
+                digit_candidates.append({
+                    "x": cx_rel, "y": cy_rel,
+                    "w": sw, "h": sh, "area": area, "aspect": aspect
+                })
+
+            if len(digit_candidates) < 2:
                 continue
 
-            cx_rel = int(centroids[i][0])
-            cy_rel = int(centroids[i][1])
-            cw_i = stats[i, cv2.CC_STAT_WIDTH]
-            ch_i = stats[i, cv2.CC_STAT_HEIGHT]
+            # Group by y into top/bottom rows
+            mid_y = ch / 2
+            top_row = [d for d in digit_candidates if d["y"] < mid_y]
+            bot_row = [d for d in digit_candidates if d["y"] >= mid_y]
 
-            if cw_i < 3 or ch_i < 3:
+            if not bot_row:
                 continue
 
-            aspect = cw_i / max(1, ch_i)
-            if not (0.5 <= aspect <= 2.0):
-                continue
+            top_row.sort(key=lambda d: d["x"])
+            bot_row.sort(key=lambda d: d["x"])
 
-            candidates.append({
-                "x": cx_rel,
-                "y": cy_rel,
-                "w": cw_i,
-                "h": ch_i,
-                "area": area,
-                "aspect": aspect,
-            })
+            # Bottom row: largest digit = denominator ("4")
+            # Top row: numerator digit ("0", "1", "2", "3")
+            # Width encodes the digit: 0→large, 1→thin, 2-3→medium
 
-        filled_count = len(candidates)
+            def width_to_digit(w: int, h: int) -> int | None:
+                aspect = w / max(1, h)
+                if aspect < 0.3:
+                    return 1  # thin vertical bar
+                if w <= 12:
+                    return 1
+                if w <= 20:
+                    return None  # uncertain
+                if w <= 30:
+                    return 2
+                if w <= 45:
+                    return 3
+                return 4
 
-        if filled_count == 0:
-            return 0, 0.70
+            # Parse numerator from top row
+            numerator: int | None = None
+            if top_row:
+                widest_top = max(top_row, key=lambda d: d["w"])
+                numerator = width_to_digit(widest_top["w"], widest_top["h"])
 
-        if filled_count > cfg.objective_total:
-            filled_count = cfg.objective_total
+            # Infer from bottom row and total
+            if bot_row:
+                widest_bot = max(bot_row, key=lambda d: d["w"])
+                bot_digit = width_to_digit(widest_bot["w"], widest_bot["h"])
 
-        avg_area = sum(c["area"] for c in candidates) / len(candidates)
-        area_score = min(1.0, avg_area / 150.0)
-        count_score = min(1.0, filled_count / cfg.objective_total)
-        shape_score = min(
-            1.0,
-            sum(1.0 - abs(1.0 - c["aspect"]) for c in candidates) / max(1, len(candidates)),
-        )
+                if numerator is not None:
+                    result_count = numerator
+                else:
+                    # Use bottom row width to guess current
+                    # Bot "4" is typically 25-40px wide in reference
+                    # If bot_digit == 4, try to infer numerator from area ratio
+                    total_w = sum(d["w"] for d in bot_row)
+                    if total_w > 50:
+                        # likely "4"
+                        if numerator is None:
+                            result_count = 0
+                        else:
+                            result_count = numerator
+                    else:
+                        result_count = 0
 
-        conf = round(area_score * 0.4 + count_score * 0.3 + shape_score * 0.3, 3)
+                total_w_all = sum(d["w"] for d in digit_candidates)
+                num_shapes = len(digit_candidates)
 
-        return filled_count, conf
+                conf = min(1.0, (num_shapes / 6.0) * 0.7 + (total_w_all / 200.0) * 0.3)
+
+                if conf > 0.5:
+                    result_count = max(0, min(result_count, cfg.objective_total))
+                    if best_result is None or conf > best_result[1]:
+                        best_result = (result_count, round(conf, 3))
+
+        if best_result is None:
+            return None, 0.0
+
+        return best_result

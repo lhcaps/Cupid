@@ -1,9 +1,15 @@
-"""Input executor: sequences primitives, tracks cooldowns, handles stop."""
+"""Non-blocking input executor with deferred action queue.
+
+Fixes: blocking time.sleep() calls that freeze the main capture loop,
+and ensures all actions execute within a single game tick.
+"""
 from __future__ import annotations
 
 import time
 import threading
 from typing import Callable, Literal
+from dataclasses import dataclass, field
+from enum import Enum
 
 from vcl_core.config import AppConfig
 from vcl_core.timebase import CooldownTracker
@@ -11,13 +17,91 @@ from vcl_input.primitives import InputPrimitives
 from vcl_core.schemas import Wave1ActionName
 
 
+class DeferredActionType(Enum):
+    HOLD = "hold"
+    TAP = "tap"
+    RELEASE = "release"
+
+
+@dataclass
+class DeferredAction:
+    action_type: DeferredActionType
+    key: str
+    down_ms: int = 80
+
+
+@dataclass
+class ActionSequence:
+    name: str
+    steps: list[DeferredAction] = field(default_factory=list)
+    _step_index: int = field(default=0, repr=False)
+    _started: bool = field(default=False, repr=False)
+    _subaction_start: float = field(default=0.0, repr=False)
+    _holding: bool = field(default=False, repr=False)
+
+    def start(self, now: float) -> bool:
+        """Start the sequence. Returns True if needs tick processing."""
+        if not self._started:
+            self._started = True
+            self._step_index = 0
+            self._holding = False
+            self._subaction_start = now
+        return True
+
+    def tick(self, primitives: InputPrimitives, now: float) -> Literal["running", "done"]:
+        """
+        Advance one step. Returns 'running' if more steps remain, 'done' if complete.
+        """
+        if not self._started or self._step_index >= len(self.steps):
+            return "done"
+
+        step = self.steps[self._step_index]
+        elapsed_ms = (now - self._subaction_start) * 1000.0
+
+        if step.action_type == DeferredActionType.HOLD:
+            if not self._holding:
+                primitives.hold(step.key)
+                self._holding = True
+                self._subaction_start = now
+                return "running"
+            if elapsed_ms < step.down_ms:
+                return "running"
+            # Hold duration complete, move to next step
+            primitives.release(step.key)
+            self._holding = False
+            self._step_index += 1
+            self._subaction_start = now
+            return "running" if self._step_index < len(self.steps) else "done"
+
+        elif step.action_type == DeferredActionType.TAP:
+            if elapsed_ms < step.down_ms:
+                return "running"
+            self._step_index += 1
+            self._subaction_start = now
+            return "running" if self._step_index < len(self.steps) else "done"
+
+        elif step.action_type == DeferredActionType.RELEASE:
+            primitives.release(step.key)
+            self._step_index += 1
+            self._subaction_start = now
+            return "running" if self._step_index < len(self.steps) else "done"
+
+        return "done"
+
+    def cancel(self, primitives: InputPrimitives) -> None:
+        """Release any held keys and reset."""
+        if self._holding:
+            primitives.release(self.steps[self._step_index].key)
+            self._holding = False
+        self._started = False
+        self._step_index = 0
+
+
 class InputExecutor:
     """
-    Executes Wave1Action commands from the HSM.
-
-    Maps HSM actions to InputPrimitives calls.
-    Tracks cooldowns and prevents spam.
-    Integrates with EmergencyStop for safety.
+    Non-blocking executor that queues deferred action sequences.
+    Each tick() call processes ONE step of the current sequence.
+    The main capture loop is NEVER blocked by time.sleep().
     """
 
     def __init__(
@@ -43,8 +127,12 @@ class InputExecutor:
             "dash": 2.0,
         }
 
+        self._queue: list[ActionSequence] = []
+        self._current: ActionSequence | None = None
+        self._last_tick: float = time.monotonic()
+
     def execute(self, action: Wave1ActionName) -> None:
-        """Execute a single HSM action."""
+        """Enqueue an action sequence. Never blocks."""
         with self._lock:
             if self._stop_flag():
                 self._primitives.release_all_keys()
@@ -52,67 +140,181 @@ class InputExecutor:
 
             name = action.value if hasattr(action, "value") else str(action)
 
-            if name == "HOLD_RADIANT_KICK":
-                self._execute_radiant_kick()
-            elif name == "RELEASE_RADIANT_KICK":
-                self._primitives.release(self.keybinds.radiant_kick)
-            elif name == "GEPPO_STACK":
-                self._primitives.geppo_stack(
-                    count=self.wave1_cfg.geppo_count,
-                    interval_ms_min=self.wave1_cfg.geppo_interval_ms_min,
-                    interval_ms_max=self.wave1_cfg.geppo_interval_ms_max,
-                )
-            elif name == "PRESS_SLOT_2":
-                self._primitives.press_slot_pika_v2()
-            elif name == "PRESS_ARMAMENT_HAKI":
-                self._primitives.press_armament_haki()
-            elif name == "OBSERVATION_SCAN":
-                self._primitives.observation_scan()
-            elif name == "CLEANUP_TARGET":
-                self._primitives.cleanup_attack()
-            elif name == "ALIGN_COMPASS":
-                self._execute_align_compass()
-            elif name == "MOVE_TO_EXIT":
-                self._execute_move_to_exit()
-            elif name == "STOP_FAILSAFE":
-                self.emergency_stop()
-            elif name == "WAIT":
-                pass
-            else:
-                pass
+            seq: ActionSequence | None = None
 
-    def _execute_radiant_kick(self) -> None:
-        """Hold R for the configured charge duration."""
+            if name == "HOLD_RADIANT_KICK":
+                seq = self._build_radiant_kick_seq()
+            elif name == "RELEASE_RADIANT_KICK":
+                seq = self._build_release_radiant_kick_seq()
+            elif name == "GEPPO_STACK":
+                seq = self._build_geppo_seq()
+            elif name == "PRESS_SLOT_2":
+                seq = self._build_press_slot_2_seq()
+            elif name == "PRESS_ARMAMENT_HAKI":
+                seq = self._build_press_armament_haki_seq()
+            elif name == "OBSERVATION_SCAN":
+                seq = self._build_observation_scan_seq()
+            elif name == "CLEANUP_TARGET":
+                seq = self._build_cleanup_seq()
+            elif name == "ALIGN_COMPASS":
+                seq = self._build_align_compass_seq()
+            elif name == "MOVE_TO_EXIT":
+                seq = self._build_move_to_exit_seq()
+            elif name == "MOVE_TO_ENEMY":
+                seq = self._build_move_to_enemy_seq()
+            elif name == "STOP_FAILSAFE":
+                seq = self._build_estop_seq()
+            elif name == "WAIT":
+                return
+
+            if seq is not None:
+                self._queue.append(seq)
+
+    def tick(self) -> None:
+        """
+        Advance the current action sequence by ONE step.
+        Called once per capture frame (every ~50ms at 20fps).
+        Non-blocking: processes at most one sub-action per call.
+        """
+        now = time.monotonic()
+        dt = now - self._last_tick
+        self._last_tick = now
+
+        if self._stop_flag():
+            self._cancel_all()
+            self._primitives.release_all_keys()
+            return
+
+        self._cooldowns.tick(dt)
+
+        if self._current is not None:
+            result = self._current.tick(self._primitives, now)
+            if result == "done":
+                self._current = None
+            return
+
+        if self._queue:
+            self._current = self._queue.pop(0)
+            self._current.start(now)
+            self._current.tick(self._primitives, now)
+
+    def _build_radiant_kick_seq(self) -> ActionSequence:
+        """Hold R for radiant_kick_charge_ms then release."""
+        charge_ms = self.wave1_cfg.radiant_kick_charge_ms
         cd = self._cooldowns.remaining("radiant_kick")
         if cd > 0:
-            return
-        self._primitives.hold(self.keybinds.radiant_kick)
-        self._cooldowns.start("radiant_kick", self._cooldown_map["radiant_kick"])
+            return ActionSequence(name="radiant_kick_cd_skip", steps=[])
+        return ActionSequence(
+            name="radiant_kick",
+            steps=[
+                DeferredAction(DeferredActionType.HOLD, self.keybinds.radiant_kick, charge_ms),
+                DeferredAction(DeferredActionType.RELEASE, self.keybinds.radiant_kick),
+            ],
+        )
 
-    def _execute_align_compass(self) -> None:
-        """Stub: compass alignment requires live compass reading, handled in runner loop."""
-        pass
+    def _build_release_radiant_kick_seq(self) -> ActionSequence:
+        return ActionSequence(
+            name="release_radiant_kick",
+            steps=[DeferredAction(DeferredActionType.RELEASE, self.keybinds.radiant_kick)],
+        )
 
-    def _execute_move_to_exit(self) -> None:
-        """Hold W to move toward exit, with dash fallback if stuck."""
-        self._primitives.hold(self.keybinds.forward)
-        time.sleep(0.5)
-        if self._stop_flag():
-            self._primitives.release(self.keybinds.forward)
-            return
-        self._primitives.release(self.keybinds.forward)
+    def _build_geppo_seq(self) -> ActionSequence:
+        """Geppo: rapid Space taps while holding S (move south toward enemies spawn).
+        Non-blocking: queues individual tap sequences instead of blocking loop."""
+        import random
+        count = self.wave1_cfg.geppo_count
+        interval_min = self.wave1_cfg.geppo_interval_ms_min
+        interval_max = self.wave1_cfg.geppo_interval_ms_max
+
+        steps = [
+            DeferredAction(DeferredActionType.HOLD, self.keybinds.backward),
+        ]
+        for i in range(count):
+            interval_ms = int(random.uniform(interval_min, interval_max))
+            steps.append(DeferredAction(DeferredActionType.TAP, self.keybinds.jump, 60))
+            steps.append(
+                DeferredAction(DeferredActionType.HOLD, "dummy_wait", interval_ms)
+            )
+        steps.append(DeferredAction(DeferredActionType.RELEASE, self.keybinds.backward))
+        return ActionSequence(name="geppo", steps=steps)
+
+    def _build_press_slot_2_seq(self) -> ActionSequence:
+        return ActionSequence(
+            name="press_slot_2",
+            steps=[DeferredAction(DeferredActionType.TAP, self.keybinds.slot_pika_v2, 80)],
+        )
+
+    def _build_press_armament_haki_seq(self) -> ActionSequence:
+        return ActionSequence(
+            name="press_armament_haki",
+            steps=[DeferredAction(DeferredActionType.TAP, self.keybinds.armament_haki, 80)],
+        )
+
+    def _build_observation_scan_seq(self) -> ActionSequence:
+        scan_ms = self.config.observation_haki.scan_duration_ms
+        return ActionSequence(
+            name="observation_scan",
+            steps=[
+                DeferredAction(DeferredActionType.TAP, self.keybinds.observation_haki, 80),
+                DeferredAction(DeferredActionType.HOLD, "dummy_wait", scan_ms),
+            ],
+        )
+
+    def _build_cleanup_seq(self) -> ActionSequence:
+        """Blitz strike: forward + slot1 + blitz_strike."""
+        return ActionSequence(
+            name="cleanup",
+            steps=[
+                DeferredAction(DeferredActionType.TAP, "1", 200),
+                DeferredAction(DeferredActionType.TAP, self.keybinds.blitz_strike, 200),
+            ],
+        )
+
+    def _build_align_compass_seq(self) -> ActionSequence:
+        return ActionSequence(name="align_compass", steps=[])
+
+    def _build_move_to_exit_seq(self) -> ActionSequence:
+        """Move forward continuously toward exit."""
+        return ActionSequence(
+            name="move_to_exit",
+            steps=[
+                DeferredAction(DeferredActionType.HOLD, self.keybinds.forward),
+                DeferredAction(DeferredActionType.HOLD, "infinite_wait", 5000),
+            ],
+        )
+
+    def _build_move_to_enemy_seq(self) -> ActionSequence:
+        """Move backward toward south (toward enemies spawn)."""
+        return ActionSequence(
+            name="move_to_enemy",
+            steps=[
+                DeferredAction(DeferredActionType.HOLD, self.keybinds.backward),
+                DeferredAction(DeferredActionType.HOLD, "infinite_wait", 5000),
+            ],
+        )
+
+    def _build_estop_seq(self) -> ActionSequence:
+        return ActionSequence(name="estop", steps=[])
+
+    def _cancel_all(self) -> None:
+        if self._current:
+            self._current.cancel(self._primitives)
+            self._current = None
+        for seq in self._queue:
+            seq.cancel(self._primitives)
+        self._queue.clear()
 
     def emergency_stop(self) -> None:
-        """Immediately release all keys and halt execution."""
+        """Immediately cancel all pending actions and halt."""
         self._running = False
+        with self._lock:
+            self._cancel_all()
         self._primitives.release_all_keys()
 
     def tick_cooldowns(self, dt_sec: float) -> None:
-        """Advance cooldown tracker by dt seconds."""
         self._cooldowns.tick(dt_sec)
 
     def on_exception(self, exc: Exception) -> None:
-        """Called on any exception during execution."""
         self.emergency_stop()
 
     @property
@@ -122,3 +324,8 @@ class InputExecutor:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def is_idle(self) -> bool:
+        """True if no actions are in flight."""
+        return self._current is None and len(self._queue) == 0

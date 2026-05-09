@@ -188,6 +188,16 @@ def live(
         run_status: Literal["clear", "fail", "stopped"] = "fail"
         stuck_retries = 0
 
+        RISKY_STATES = (
+            Wave1State.VERIFY_STAGE_UI,
+            Wave1State.AGGRO_WITH_GEPPO,
+            Wave1State.CAST_CHARGED_RADIANT_KICK,
+            Wave1State.RELEASE_RADIANT_KICK,
+            Wave1State.VERIFY_COUNTER,
+            Wave1State.ALIGN_TO_EXIT,
+            Wave1State.MOVE_NEXT_STAGE,
+        )
+
         try:
             with LiveFrameSource(monitor_index=1, fps_target=cfg.screen.fps_target) as source:
                 for ts, frame in source:
@@ -209,30 +219,26 @@ def live(
                         else "?"
                     )
 
-                    RISKY_STATES = (
-                        Wave1State.VERIFY_STAGE_UI,
-                        Wave1State.AGGRO_WITH_GEPPO,
-                        Wave1State.CAST_CHARGED_RADIANT_KICK,
-                        Wave1State.RELEASE_RADIANT_KICK,
-                        Wave1State.VERIFY_COUNTER,
-                        Wave1State.ALIGN_TO_EXIT,
-                        Wave1State.MOVE_NEXT_STAGE,
-                    )
+                    # Confidence gate: in execute mode, block key presses when vision is uncertain
+                    # but always let HSM tick so it can track state
+                    low_conf = progress.confidence < cfg.progress_ui.min_confidence
+                    in_risky = hsm.state in RISKY_STATES
 
-                    if mode == "execute" and hsm.state in RISKY_STATES:
-                        if progress.confidence < cfg.progress_ui.min_confidence:
-                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} < {cfg.progress_ui.min_confidence:.2f} — skipping hsm.tick, releasing keys[/yellow]")
-                            executor.primitives.release_held_keys()
-                            logger.log(
-                                state=hsm.state.value,
-                                timestamp=elapsed,
-                                progress=progress_str,
-                                compass=compass.label,
-                                action=Wave1Action(name=Wave1ActionName.WAIT, reason="low_confidence_pre_hsm_pause"),
-                                progress_confidence=progress.confidence,
-                                compass_confidence=compass.confidence,
-                            )
-                            continue
+                    if mode == "execute" and low_conf and in_risky:
+                        console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} < {cfg.progress_ui.min_confidence:.2f} in risky state — releasing keys[/yellow]")
+                        executor.primitives.release_held_keys()
+                        logger.log(
+                            state=hsm.state.value,
+                            timestamp=elapsed,
+                            progress=progress_str,
+                            compass=compass.label,
+                            action=Wave1Action(name=Wave1ActionName.WAIT, reason="low_confidence_pre_hsm_pause"),
+                            progress_confidence=progress.confidence,
+                            compass_confidence=compass.confidence,
+                        )
+                        # Advance executor so held keys get released
+                        executor.tick()
+                        continue
 
                     action = hsm.tick(
                         game_state=None,
@@ -259,6 +265,10 @@ def live(
 
                     if mode == "execute":
                         executor.execute(action.name)
+
+                    # CRITICAL: tick executor every frame so non-blocking actions advance
+                    if mode == "execute":
+                        executor.tick()
 
                     if hsm.state == Wave1State.DONE:
                         run_status = "clear"

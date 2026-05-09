@@ -1,0 +1,32 @@
+screen: {width: 2560, height: 1440, fps_target: 20}
+keybinds: {slot_pika_v2: '2', armament_haki: j, observation_haki: g, jump: space,
+  forward: w, backward: s, radiant_kick: r, dash: q, blitz_strike: e}
+# Crops from pixel analysis of execute_run1.mp4 (2560x1440):
+# Progress UI is in BOTTOM-LEFT corner:
+#   - Text rows at y=990-1132, x=25-400
+#   - Counter "X / 4" at y=1080-1132, x=25-400
+#   - Wave/stage name at y=990-1060, x=25-400
+# Compass is at TOP-LEFT (not top-center as previously assumed):
+#   - Text cluster at y=12-56, x=16-216
+# COMPASS TARGET: S (South = 180 degrees)
+# CROPS ARE SCALED FOR THIS VIDEO'S RESOLUTION (2560x1440)
+# If game resolution differs, re-calibrate
+progress_ui:
+  crop: [25, 985, 400, 1135]
+  counter_crop: [25, 1080, 400, 1135]
+  wave_panel_crop: [25, 985, 400, 1065]
+  stage_name: Shattered Ramparts
+  dungeon_name: Cupid's Ruin
+  objective_total: 4
+  min_confidence: 0.75
+compass:
+  crop: [15, 5, 220, 60]
+  target_exit_heading: S
+  heading_tolerance_deg: 15
+  rotate_timeout_sec: 3.0
+wave1: {setup_delay_ms: 500, geppo_count: 5, geppo_interval_ms_min: 100, geppo_interval_ms_max: 180,
+  aggro_wait_ms: 1000, radiant_kick_charge_ms: 2000, damage_register_wait_ms: 2200,
+  max_cleanup_cycles: 2, next_stage_name: The Forsaken Garden}
+observation_haki: {scan_duration_ms: 900, min_target_confidence: 0.65, max_scans_per_stage: 2}
+safety: {emergency_stop_key: f1, max_state_duration_sec: 15.0, release_all_keys_on_stop: true,
+  save_failure_screenshot: true}
