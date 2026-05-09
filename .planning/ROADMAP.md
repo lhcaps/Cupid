@@ -359,6 +359,31 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 
 **Verification:** validate_install PASS, pytest 46/46 PASS, replay smoke PASS, HSM dry-run reports correct fail status
 
+### Phase P0.6 — Execute-Blocking HSM Bugs
+
+**Dependency:** Phase P0.5
+**Status:** COMPLETED (2026-05-09)
+**Goal:** Fix 5 execute-blocking bugs making Wave 1 safe for live execution.
+
+**Tasks completed:**
+1. P0 Blocker 1 — CAST one-shot bug: Split `CAST_CHARGED_RADIANT_KICK` into `CAST_CHARGED_RADIANT_KICK` → `RELEASE_RADIANT_KICK` → `VERIFY_COUNTER`. HOLD and RELEASE are now in separate state entries; one-shot suppression eliminated.
+2. P0 Blocker 2 — Impossible DONE: `guard_stage_transitioned` accepts counter-reset fallback: `prev_objective==4 AND current==0 AND confidence>=0.75` confirms transition. Gated by MOVE_TO_EXIT flow.
+3. P0 Blocker 3 — Low-confidence consuming actions: `guard_stage_verified` and `guard_objective_complete` use `cfg.min_confidence (0.75)`. Live loop pre-gates `hsm.tick()` for RISKY_STATES when confidence < min_confidence. `RELEASE_RADIANT_KICK` added to RISKY_STATES.
+4. P1 Bug — release_held_keys: Added `"1"`, `"2"`, and `keybinds.slot_pika_v2` to safety list.
+5. P1 Bug — objective_final falsy 0: Replaced `or '?'` with explicit `is None` checks.
+
+**New tests:** 8 added (54 total, all passing)
+
+**Files changed:** `wave1_machine.py`, `transitions.py`, `states.py`, `primitives.py`, `wave_runner/main.py`, `test_wave1_hsm.py`, `test_input_safety.py`
+
+**Verification:** validate_install PASS, pytest 54/54 PASS, replay_analyzer --help PASS, wave_runner --help PASS
+
+**Next steps:**
+- Run assist mode to validate counter reads and confidence on real gameplay
+- Tune `progress_ui.crop` regions if reads are unstable
+- If assist confirms stable reads, run execute mode with fail-case logging
+- Begin 10-run verification once execute is stable
+
 **Next steps:**
 - Run assist mode first to validate low-confidence behavior on real gameplay
 - Tune `progress_ui.crop` / `progress_ui.counter_crop` based on assist mode feedback
