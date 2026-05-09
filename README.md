@@ -43,7 +43,7 @@ python -m apps.replay_analyzer.main analyze --video path/to/video.mp4 --out repo
 python -m apps.wave_runner.main live --mode assist
 
 # Execute mode (full automation)
-python -m apps.wave_runner.main live --mode execute
+python -m apps.wave_runner.main live --mode execute --input-backend pydirectinput --capture-backend dxcam --debug-input --debug-vision
 
 # Optional: install runtime backends for better game compatibility
 pip install ".[runtime]"   # dxcam + pydirectinput-rgx + PyWinCtl + pyautogui
@@ -72,6 +72,8 @@ VCL uses pluggable backends for screen capture and keyboard input:
 | `pynput` (default) | Included | General keyboard input |
 | `pydirectinput` | `pip install ".[runtime]"` | **Roblox/DirectX games, SendInput+scan codes** |
 | `pyautogui` | `pip install ".[runtime]"` | General fallback |
+
+**Important:** `--input-backend` now directly controls the input backend used during live execute. The backend is instantiated before the loop starts and passed into `InputPrimitives`. Assist mode uses `LoggingInputBackend` (no real keypresses).
 
 ### Window Focus Guard
 Before execute mode, VCL checks that the Roblox window is focused.

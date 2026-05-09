@@ -22,7 +22,7 @@ from vcl_hsm import Wave1HSM, Wave1State
 from vcl_input.primitives import InputPrimitives
 from vcl_input.executor import InputExecutor
 from vcl_input.emergency_stop import EmergencyStop, setup_ctrl_c_handler
-from vcl_input.backends import create_input_backend, LoggingInputBackend
+from vcl_input.backends import create_input_backend, LoggingInputBackend, InputBackend
 from vcl_input.window_focus import ensure_window_focused, get_active_window_title
 from vcl_eval.metrics import RunMetrics, compute_metrics
 from vcl_eval.report import ReportGenerator
@@ -204,7 +204,22 @@ def live(
     compass_det = CompassDetector(cfg.compass)
     haki_det = HakiDetector(cfg.observation_haki)
 
-    primitives = InputPrimitives(cfg.keybinds)
+    # Create input backend and primitives. Assist uses LoggingInputBackend (no real input).
+    # Execute uses the selected backend (validated in preflight).
+    if mode == "assist":
+        runtime_input_backend: "InputBackend | None" = None  # LoggingInputBackend injected below
+        primitives = InputPrimitives(
+            keybinds=cfg.keybinds,
+            input_config=cfg.input,
+            backend=LoggingInputBackend(),
+        )
+    else:
+        runtime_input_backend = create_input_backend(cfg.input)
+        primitives = InputPrimitives(
+            keybinds=cfg.keybinds,
+            input_config=cfg.input,
+            backend=runtime_input_backend,
+        )
     executor = InputExecutor(config=cfg, primitives=primitives)
     estop = EmergencyStop(primitives=primitives, screenshot_dir="reports/failure_cases")
     estop.start()
@@ -225,7 +240,10 @@ def live(
         stuck_retries = 0
 
         RISKY_STATES = (
-            Wave1State.VERIFY_STAGE_UI,
+            # VERIFY_STAGE_UI intentionally excluded: HSM must tick through it to
+            # reach AGGRO_WITH_GEPPO even with low-confidence 0/4 initial reads.
+            # No combat actions are taken in VERIFY_STAGE_UI so blocking it would
+            # deadlock the runner before combat even starts.
             Wave1State.AGGRO_WITH_GEPPO,
             Wave1State.CAST_CHARGED_RADIANT_KICK,
             Wave1State.RELEASE_RADIANT_KICK,
@@ -244,6 +262,7 @@ def live(
                 backend=cfg.capture.backend,
             ) as source:
                 console.print(f"  [dim]Capture backend: {source.backend_name}[/dim]")
+                console.print(f"  [dim]Input backend  : {primitives.backend_name}[/dim]")
 
                 # Create VisionDebug once per run, not per frame
                 vision_debugger: "VisionDebug | None" = None
@@ -289,6 +308,7 @@ def live(
                             debug_info={
                                 "mode": debug_info.selected_mode,
                                 "candidates": debug_info.candidate_count,
+                                "slots": debug_info.slot_count,
                                 "circle_count": debug_info.circle_count,
                                 "circle_conf": debug_info.circle_conf,
                                 "text_count": debug_info.text_count,
@@ -341,6 +361,7 @@ def live(
                         console.print(
                             f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
                             f"[INPUT DEBUG] action={action.name.value} "
+                            f"backend={primitives.backend_name} "
                             f"queue={len(executor._queue)} "
                             f"held={sorted(primitives.held_keys)}"
                         )

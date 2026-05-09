@@ -175,6 +175,58 @@ class TestInputBackend:
         backend.press("space")
         backend.release("space")
 
+    def test_input_primitives_backend_name_property(self):
+        """InputPrimitives must expose backend_name property."""
+        from vcl_input.primitives import InputPrimitives
+        from vcl_input.backends import LoggingInputBackend
+
+        # With injected backend
+        logging = LoggingInputBackend()
+        prim = InputPrimitives(backend=logging)
+        assert prim.backend_name == "logging"
+
+        # With function injection (custom_fn)
+        prim_fn = InputPrimitives(press_fn=lambda k: None, release_fn=lambda k: None)
+        assert prim_fn.backend_name == "custom_fn"
+
+    def test_input_primitives_respects_input_config_backend(self):
+        """InputPrimitives should create the correct backend from InputConfig."""
+        from vcl_input.primitives import InputPrimitives
+        from vcl_core.config import InputConfig
+        from vcl_input.backends import create_input_backend
+
+        # When no backend injected, InputPrimitives creates one from input_config
+        cfg = InputConfig(backend="pynput")
+        prim = InputPrimitives(input_config=cfg)
+        # Backend should be created lazily on first use, verify the config is stored
+        assert prim._input_config.backend == "pynput"
+
+    def test_input_primitives_uses_injected_backend_press_release(self):
+        """InputPrimitives must use injected backend's press/release, not create a new one."""
+        from vcl_input.primitives import InputPrimitives
+        from vcl_input.backends import InputBackend
+
+        pressed_keys = []
+        released_keys = []
+
+        class FakeBackend(InputBackend):
+            name = "fake"
+            def press(self, key):
+                pressed_keys.append(key)
+            def release(self, key):
+                released_keys.append(key)
+
+        fake = FakeBackend()
+        prim = InputPrimitives(backend=fake)
+
+        # Verify backend_name returns correct name
+        assert prim.backend_name == "fake"
+
+        # Verify press/release go through injected backend
+        prim.tap("space")
+        assert "space" in pressed_keys
+        assert "space" in released_keys
+
 
 class TestFocusGuard:
     """Tests for window focus guard."""

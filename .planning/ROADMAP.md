@@ -585,6 +585,50 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 
 ---
 
+## Phase P0.10 — Live Backend Wiring + 0/4 Startup Detection
+
+**Dependency:** Phase P0.9
+**Status:** COMPLETED
+
+**Goal:** Fix two P0.9 residual issues found during review:
+1. `--input-backend` CLI flag was validated in preflight but NOT wired into runtime primitives.
+2. `_count_circles` returned `(None, 0.0, 0)` for no-candidates, which could deadlock the HSM at Wave 1 start.
+
+**Tasks completed:**
+1. **Backend wiring** — `live()` now creates `create_input_backend(cfg.input)` for execute mode and `LoggingInputBackend()` for assist mode, passing the selected backend directly into `InputPrimitives`. No more silent fallback to pynput.
+2. **`backend_name` property** — `InputPrimitives` now exposes `backend_name` property for debug proof.
+3. **Debug input proof** — `live()` now prints `Input backend: {primitives.backend_name}` at loop start and includes `backend={primitives.backend_name}` in every `[INPUT DEBUG]` log line.
+4. **Empty slot detection** — Added `_count_empty_slots()` using Canny edges + contour circularity to detect unfilled ring/slot geometry in the counter region. Added `slot_count` to `ProgressDebugInfo`.
+5. **0/4 detection path** — If `panel_active=True`, `circle_count=0`, and `slot_count >= objective_total`, the detector now returns `objective_current=0, objective_total=4, confidence` based on slot geometry. This unblocks `guard_stage_verified()` at Wave 1 start.
+6. **`_count_circles` 4-tuple** — Returns `(count, conf, candidate_count, slot_count)` for full debug visibility.
+7. **`VERIFY_STAGE_UI` removed from `RISKY_STATES`** — `hsm.tick()` always fires in `VERIFY_STAGE_UI`, allowing the HSM to progress from setup to combat even with low-confidence initial reads. Risky combat states (AGGRO, CAST, etc.) still block on low confidence.
+8. **Tests** — Added `backend_name` property tests, empty-slot blank crop tests, `slot_count` field tests.
+
+**Files changed:**
+- `apps/wave_runner/main.py` — Backend wired into primitives, `LoggingInputBackend` for assist, `backend_name` in debug output, `VERIFY_STAGE_UI` removed from `RISKY_STATES`, `slot_count` in debug JSON
+- `packages/vcl_input/primitives.py` — `backend_name` property added
+- `packages/vcl_vision/progress_detector.py` — `_count_empty_slots()`, 4-tuple `_count_circles`, `slot_count` in `ProgressDebugInfo`, 0/4 detection path
+- `tests/test_backends.py` — `backend_name` property tests, injected backend press/release tests
+- `tests/test_progress_detector.py` — `slot_count` field test, blank-crop-no-high-confidence test
+- `README.md` — Updated execute command, note about backend wiring, backend priority order
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `python -m pytest tests/test_backends.py tests/test_progress_detector.py tests/test_calibrate_regions.py tests/test_input_safety.py` → 63 passed
+- `python -m compileall apps packages tools` → PASS
+- `python -m apps.wave_runner.main --help` → PASS
+- `python -m apps.wave_runner.main live --help` → PASS
+
+**Known remaining risks:**
+- Empty slot detection relies on geometric heuristics — may need tuning against real game captures
+- Slot detection uses Canny edges + contour circularity — if unfilled rings don't have clear edge contrast, detection may still miss 0/4
+
+**Next steps:**
+1. `pip install ".[runtime]"` — install all runtime backends
+2. `python -m apps.wave_runner.main live --mode assist --capture-backend dxcam --debug-vision` — diagnose counter reads
+3. `python -m apps.wave_runner.main keyboard-test --input-backend pydirectinput` — verify Roblox key receipt
+4. `python -m apps.wave_runner.main live --mode execute --input-backend pydirectinput --capture-backend dxcam --debug-input --debug-vision` — first real execute run
+
 ## Post-MVP Backlog (NOT in this roadmap)
 
 | Item | Trigger | Priority |

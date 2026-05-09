@@ -207,8 +207,9 @@ class TestProgressDetector:
             assert debug_info.candidate_count > 0, (
                 f"candidate_count should be > 0 for valid circle fixture. "
                 f"Got {debug_info.candidate_count}. "
-                f"_count_circles must return a 3-tuple with candidate_count."
+                f"_count_circles must return 4-tuple (count, conf, candidate_count, slot_count)."
             )
+            assert debug_info.slot_count >= 0
 
     def test_candidate_count_is_zero_for_blank_counter(self):
         """ProgressDebugInfo.candidate_count should be 0 when no circles are found."""
@@ -229,6 +230,41 @@ class TestProgressDetector:
         assert debug_info.candidate_count == 0, (
             f"candidate_count should be 0 for blank counter. Got {debug_info.candidate_count}."
         )
+
+    def test_slot_count_field_exists(self):
+        """ProgressDebugInfo must have slot_count field."""
+        cfg = ProgressUIConfig()
+        det = ProgressDetector(config=cfg)
+        frame = np.zeros((1440, 2560, 3), dtype=np.uint8)
+        _, debug_info = det.detect_with_debug(frame)
+        assert hasattr(debug_info, "slot_count"), "ProgressDebugInfo must have slot_count field"
+
+    def test_blank_crop_does_not_produce_high_confidence_0_4(self):
+        """Blank crop should never return high-confidence 0/4."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+        )
+        # Panel is active (bright region), counter is completely dark
+        panel = _make_active_wave_panel(width=550, height=180)
+        counter = np.zeros((40, 420, 3), dtype=np.uint8)
+        frame = _make_full_frame(counter, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        _, debug_info = det.detect_with_debug(frame)
+
+        # Without visible slots, blank crop must NOT produce high-confidence 0/4
+        assert debug_info.slot_count == 0, (
+            f"Blank counter should have slot_count=0. Got {debug_info.slot_count}."
+        )
+        if debug_info.selected_mode == "circle" and debug_info.circle_count == 0:
+            # If 0/4 is reported, confidence must be below the verification threshold
+            assert debug_info.raw_confidence < 0.75, (
+                f"Blank crop must NOT produce high-confidence 0/4. "
+                f"Got circle_count=0 with conf={debug_info.raw_confidence}"
+            )
 
     def test_circle_3_4_returns_current_3(self):
         """Three filled circles should return objective_current=3."""

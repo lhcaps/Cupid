@@ -213,5 +213,14 @@ class InputPrimitives:
         self.tap(self.keybinds.dash, down_ms=100)
 
     @property
+    def backend_name(self) -> str:
+        """Return the name of the active input backend."""
+        if self._backend is not None:
+            return self._backend.name
+        if self._press_fn is not None and self._press_fn not in (self._default_press, self._default_release):
+            return "custom_fn"
+        return "pynput"
+
+    @property
     def held_keys(self) -> set[str]:
         return self._held_keys.copy()

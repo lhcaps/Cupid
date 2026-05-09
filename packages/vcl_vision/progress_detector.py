@@ -19,7 +19,8 @@ class ProgressDebugInfo:
     text_conf: float
     panel_active: bool
     panel_conf: float
-    candidate_count: int
+    candidate_count: int   # filled circle candidates
+    slot_count: int        # empty ring/slot candidates (for 0/4 detection)
     raw_confidence: float
 
 
@@ -65,6 +66,7 @@ class ProgressDetector:
                 text_count=None, text_conf=0.0,
                 panel_active=False, panel_conf=0.0,
                 candidate_count=0,
+                slot_count=0,
                 raw_confidence=0.0,
             )
             return ProgressState(confidence=0.0), debug
@@ -72,13 +74,14 @@ class ProgressDetector:
         circle_result = self._count_circles(crop)
         text_result = self._count_text(crop)
 
-        circle_count, circle_conf, candidate_count = circle_result
+        circle_count, circle_conf, candidate_count, slot_count = circle_result
         text_count, text_conf = text_result
 
         panel_active_circle, panel_conf_circle = self._detect_panel(crop, mode="circle")
         panel_active_text, panel_conf_text = self._detect_panel(crop, mode="text")
 
-        if circle_count is not None:
+        if circle_count is not None or slot_count > 0:
+            # Build debug info
             debug = ProgressDebugInfo(
                 selected_mode="circle",
                 circle_count=circle_count,
@@ -88,8 +91,10 @@ class ProgressDetector:
                 panel_active=panel_active_circle,
                 panel_conf=panel_conf_circle,
                 candidate_count=candidate_count,
+                slot_count=slot_count,
                 raw_confidence=0.0,
             )
+
             if not panel_active_circle:
                 debug.raw_confidence = 0.0
                 return ProgressState(
@@ -98,22 +103,46 @@ class ProgressDetector:
                     confidence=0.0,
                 ), debug
 
-            raw_conf = round(panel_conf_circle * 0.3 + circle_conf * 0.7, 3)
-            debug.raw_confidence = raw_conf
-            if raw_conf < cfg.min_confidence:
+            # 0/4 case: no filled circles but visible slot rings
+            if circle_count == 0 and slot_count >= cfg.objective_total:
+                # Empty slots detected: this is a valid 0/4 read
+                # Confidence based on slot detection quality
+                slot_base_conf = round(min(1.0, slot_count / cfg.objective_total) * 0.6, 3)
+                raw_conf = round(panel_conf_circle * 0.3 + slot_base_conf * 0.7, 3)
+                debug.raw_confidence = raw_conf
+                return ProgressState(
+                    stage_name=cfg.stage_name,
+                    dungeon_name=cfg.dungeon_name,
+                    objective_current=0,
+                    objective_total=cfg.objective_total,
+                    confidence=raw_conf,
+                ), debug
+
+            if circle_count is not None:
+                raw_conf = round(panel_conf_circle * 0.3 + circle_conf * 0.7, 3)
+                debug.raw_confidence = raw_conf
+                if raw_conf < cfg.min_confidence:
+                    return ProgressState(
+                        stage_name=cfg.stage_name,
+                        dungeon_name=cfg.dungeon_name,
+                        objective_current=circle_count,
+                        objective_total=cfg.objective_total,
+                        confidence=0.0,
+                    ), debug
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
                     objective_current=circle_count,
                     objective_total=cfg.objective_total,
-                    confidence=0.0,
+                    confidence=raw_conf,
                 ), debug
+
+            # circle_count is None and slot_count == 0: no detection
+            debug.raw_confidence = 0.0
             return ProgressState(
                 stage_name=cfg.stage_name,
                 dungeon_name=cfg.dungeon_name,
-                objective_current=circle_count,
-                objective_total=cfg.objective_total,
-                confidence=raw_conf,
+                confidence=0.0,
             ), debug
 
         if text_count is not None:
@@ -125,6 +154,7 @@ class ProgressDetector:
                 panel_active=panel_active_text,
                 panel_conf=panel_conf_text,
                 candidate_count=0,
+                slot_count=0,
                 raw_confidence=0.0,
             )
             if not panel_active_text:
@@ -159,6 +189,7 @@ class ProgressDetector:
             text_count=None, text_conf=0.0,
             panel_active=False, panel_conf=0.0,
             candidate_count=0,
+            slot_count=0,
             raw_confidence=0.0,
         )
         return ProgressState(
@@ -206,14 +237,17 @@ class ProgressDetector:
     # Circle counter (fullscreen mode)
     # ------------------------------------------------------------------
 
-    def _count_circles(self, crop: np.ndarray) -> tuple[int | None, float, int]:
+    def _count_empty_slots(self, crop: np.ndarray) -> tuple[int, float]:
         """
-        Count filled circles in counter region.
-        Filled = bright center (enemy killed), unfilled = dark ring (alive).
+        Detect empty unfilled slot rings in the counter region.
 
-        Returns (count, confidence, candidate_count).
-        candidate_count is the number of geometric candidates found (before min cap).
-        Returns (None, 0.0, 0) when no candidates are found.
+        Unfilled slots appear as DARK rings (dark circle outlines, unfilled interior)
+        at the expected circle positions. We detect them by looking for donut-like
+        contours: circular shapes with a dark perimeter and darker-than-background interior.
+
+        Returns (slot_count, confidence).
+        slot_count is the number of detected empty slots (up to objective_total).
+        Returns (0, 0.0) when no slots are detected.
         """
         cfg = self.config
 
@@ -230,11 +264,99 @@ class ProgressDetector:
         ch = counter_y2 - counter_y
 
         if cw <= 0 or ch <= 0:
-            return None, 0.0, 0
+            return 0, 0.0
 
         counter_crop = crop[counter_y:counter_y2, counter_x:counter_x2]
         if counter_crop.size == 0:
-            return None, 0.0, 0
+            return 0, 0.0
+
+        gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
+
+        # Find edges — slots have ring-like contours
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 30, 90)
+
+        # Find contours
+        contours, hierarchy = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if contours is None or len(contours) == 0:
+            return 0, 0.0
+
+        # Filter contours that look like circular rings
+        slots = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 30 or area > 2000:
+                continue
+
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter < 1:
+                continue
+
+            circularity = 4 * 3.14159 * area / (perimeter * perimeter)
+            if circularity < 0.30:  # Not circular enough
+                continue
+
+            # Check if this contour is a ring: the interior should be dark
+            # by looking at mean brightness inside vs outside
+            x, y, w, h = cv2.boundingRect(cnt)
+            # Skip contours that are too wide/tall (likely text or UI elements)
+            aspect = w / max(1, h)
+            if not (0.5 <= aspect <= 2.0):
+                continue
+
+            # Verify the interior of this contour is dark (unfilled)
+            cx, cy = x + w // 2, y + h // 2
+            try:
+                center_val = int(gray[min(cy, gray.shape[0] - 1), min(cx, gray.shape[1] - 1)])
+            except (IndexError, ValueError):
+                continue
+
+            # Dark interior means unfilled slot
+            if center_val < 80:
+                slots.append({"area": area, "w": w, "h": h, "circularity": circularity})
+
+        if not slots:
+            return 0, 0.0
+
+        slot_count = min(len(slots), cfg.objective_total)
+
+        # Confidence based on slot geometry
+        avg_circ = sum(s["circularity"] for s in slots) / len(slots)
+        count_score = min(1.0, slot_count / cfg.objective_total)
+        shape_score = avg_circ
+        conf = round(shape_score * 0.6 + count_score * 0.4, 3)
+
+        return slot_count, conf
+
+    def _count_circles(self, crop: np.ndarray) -> tuple[int | None, float, int, int]:
+        """
+        Count filled circles and empty slots in counter region.
+
+        Returns (count, confidence, filled_candidate_count, slot_count).
+        count is filled circle count (capped at objective_total).
+        slot_count is empty slot count for 0/4 detection.
+        Returns (None, 0.0, 0, 0) when nothing is detected.
+        """
+        cfg = self.config
+
+        counter_x = cfg.counter_crop.x1 - cfg.crop.x1
+        counter_y = cfg.counter_crop.y1 - cfg.crop.y1
+        counter_w = cfg.counter_crop.x2 - cfg.counter_crop.x1
+        counter_h = cfg.counter_crop.y2 - cfg.counter_crop.y1
+
+        counter_x = max(0, counter_x)
+        counter_y = max(0, counter_y)
+        counter_x2 = min(counter_x + counter_w, crop.shape[1])
+        counter_y2 = min(counter_y + counter_h, crop.shape[0])
+        cw = counter_x2 - counter_x
+        ch = counter_y2 - counter_y
+
+        if cw <= 0 or ch <= 0:
+            return None, 0.0, 0, 0
+
+        counter_crop = crop[counter_y:counter_y2, counter_x:counter_x2]
+        if counter_crop.size == 0:
+            return None, 0.0, 0, 0
 
         gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
         _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
@@ -261,7 +383,7 @@ class ProgressDetector:
             candidates.append({"area": area, "w": sw, "h": sh, "aspect": aspect})
 
         if not candidates:
-            return None, 0.0, 0
+            return None, 0.0, 0, 0
 
         count = min(len(candidates), cfg.objective_total)
         candidate_count = len(candidates)
@@ -275,7 +397,10 @@ class ProgressDetector:
         )
         conf = round(area_score * 0.4 + count_score * 0.3 + shape_score * 0.3, 3)
 
-        return count, conf, candidate_count
+        # Detect empty slots for 0/4 support
+        slot_count, slot_conf = self._count_empty_slots(crop)
+
+        return count, conf, candidate_count, slot_count
 
     # ------------------------------------------------------------------
     # Text counter (windowed/non-fullscreen mode)
