@@ -161,14 +161,16 @@ class TestLiveConfidenceGateIntegration:
         # detect_with_debug returns tuple: (ProgressState, ProgressDebugInfo)
         mock_debug_info = ProgressDebugInfo(
             selected_mode="circle",
-            candidate_count=0,
             circle_count=progress.objective_current,
             circle_conf=progress.confidence,
             text_count=None,
             text_conf=0.0,
             panel_active=True,
             panel_conf=0.8,
+            candidate_count=0,
+            slot_count=0,
             raw_confidence=progress.confidence,
+            accepted_confidence=progress.confidence,
         )
         mock_pd.detect_with_debug.return_value = (progress, mock_debug_info)
         MockPD = MagicMock(return_value=mock_pd)
@@ -457,10 +459,15 @@ class TestLiveConfidenceGateIntegration:
     # All 7 RISKY_STATES individually
     # ------------------------------------------------------------------
 
-    def test_execute_all_seven_risky_states_block_tick(self):
-        """All 7 RISKY_STATES individually block tick with low confidence."""
+    def test_execute_all_six_risky_states_block_tick(self):
+        """All 6 RISKY_STATES individually block tick with low confidence.
+
+        Note: VERIFY_STAGE_UI is intentionally EXCLUDED from RISKY_STATES in live()
+        because HSM must tick through it to reach AGGRO_WITH_GEPPO even with low-confidence
+        initial reads. The runner comment explains: no combat actions taken in VERIFY_STAGE_UI.
+        """
+        # These are the actual RISKY_STATES from apps/wave_runner/main.py:
         RISKY_STATES = [
-            Wave1State.VERIFY_STAGE_UI,
             Wave1State.AGGRO_WITH_GEPPO,
             Wave1State.CAST_CHARGED_RADIANT_KICK,
             Wave1State.RELEASE_RADIANT_KICK,
@@ -468,6 +475,7 @@ class TestLiveConfidenceGateIntegration:
             Wave1State.ALIGN_TO_EXIT,
             Wave1State.MOVE_NEXT_STAGE,
         ]
+        # VERIFY_STAGE_UI intentionally excluded (see main.py line 243-246)
 
         for risky_state in RISKY_STATES:
             tick_tracking = []

@@ -60,10 +60,14 @@ class Wave1HSM:
         self._stopped = False
 
         self._stability = CounterStabilityTracker(
-            window_size=3,
-            required_count=3,
+            window_size=self.wave1_cfg.stable_window_size,
+            required_count=self.wave1_cfg.stable_required_count,
             required_objective=self.progress_cfg.objective_total,
             min_confidence=self.progress_cfg.min_confidence,
+            persistent_window_size=self.wave1_cfg.persistent_window_size,
+            persistent_required_total=self.wave1_cfg.persistent_required_total,
+            persistent_required_strong=self.wave1_cfg.persistent_required_strong,
+            persistent_min_strong_confidence=self.progress_cfg.min_confidence,
         )
 
         self._action_emitted: set[str] = set()
@@ -180,10 +184,11 @@ class Wave1HSM:
             )
 
         if state == Wave1State.VERIFY_STAGE_UI:
-            ok, _ = guard_stage_verified(
+            ok, reason = guard_stage_verified(
                 progress,
                 expected_stage=self.progress_cfg.stage_name,
                 min_confidence=self.progress_cfg.min_confidence,
+                initial_counter_max=self.wave1_cfg.initial_counter_max,
             )
             if ok:
                 self._transition_to(Wave1State.AGGRO_WITH_GEPPO, current_time)
@@ -197,7 +202,7 @@ class Wave1HSM:
             return self._emit_action_once(
                 Wave1State.VERIFY_STAGE_UI,
                 Wave1ActionName.READ_PROGRESS,
-                "verifying_stage_ui",
+                f"verifying_stage_ui: {reason}",
                 current_time,
             )
 
@@ -284,10 +289,11 @@ class Wave1HSM:
                         f"stable 4/4 confirmed, aligning compass to {self.compass_cfg.target_exit_heading}",
                         current_time,
                     )
+                strong_count = len([r for r in self._stability.last_reads if r[0] == 4 and r[1] >= self.progress_cfg.min_confidence])
                 return self._emit_action_once(
                     Wave1State.VERIFY_COUNTER,
                     Wave1ActionName.WAIT,
-                    f"4/4 seen but not yet stable ({len([r for r in self._stability.last_reads if r[0] == 4])}/3)",
+                    f"4/4 seen but not yet stable ({strong_count}/{self.wave1_cfg.stable_required_count})",
                     current_time,
                 )
 
@@ -305,16 +311,38 @@ class Wave1HSM:
                     current_time,
                 )
 
-            # Only branch to OBS_HAKI_SCAN after giving the counter a chance to settle.
-            # A single bad read during post-Radiant-Kick verification should NOT force
-            # a cleanup cycle. Require the verification window to expire before declaring incomplete.
             elapsed = current_time - self._state_entered_at
             verify_window = self.wave1_cfg.verify_window_sec
+
+            # PERSISTENT CLEAR FALLBACK: if the persistent window shows consistent 4/4
+            # with intermittent confidence, exit to ALIGN_TO_EXIT without waiting for
+            # verify_window to expire. This prevents FAILSAFE on real captures where
+            # per-frame confidence flickers but the count is visibly consistent.
+            persistent_reads = self._stability.persistent_reads
+            at_4_in_persistent = [r for r in persistent_reads if r[0] == 4]
+            strong_in_persistent = [r for r in persistent_reads if r[0] == 4 and r[1] >= self.progress_cfg.min_confidence]
+            if (
+                len(at_4_in_persistent) >= self.wave1_cfg.persistent_required_total
+                and len(strong_in_persistent) >= self.wave1_cfg.persistent_required_strong
+            ):
+                self._prev_progress = progress
+                self._transition_to(Wave1State.ALIGN_TO_EXIT, current_time)
+                return self._emit_action_once(
+                    Wave1State.ALIGN_TO_EXIT,
+                    Wave1ActionName.ALIGN_COMPASS,
+                    f"persistent 4/4 confirmed ({len(at_4_in_persistent)}/{len(persistent_reads)} reads, "
+                    f"{len(strong_in_persistent)} high-confidence anchors), aligning to {self.compass_cfg.target_exit_heading}",
+                    current_time,
+                )
+
             if elapsed < verify_window:
+                weak_count = len(at_4_in_persistent)
+                strong_count = len(strong_in_persistent)
                 return self._emit_action_once(
                     Wave1State.VERIFY_COUNTER,
                     Wave1ActionName.WAIT,
-                    f"verifying ({elapsed:.1f}s < {verify_window:.1f}s window)",
+                    f"verifying ({elapsed:.1f}s < {verify_window:.1f}s window, "
+                    f"{weak_count}/{len(persistent_reads)} reads, {strong_count} anchors)",
                     current_time,
                 )
 
@@ -428,12 +456,30 @@ class Wave1HSM:
                         f"stable 4/4 confirmed after cleanup, aligning to {self.compass_cfg.target_exit_heading}",
                         current_time,
                     )
+                strong_count = len([r for r in self._stability.last_reads if r[0] == 4 and r[1] >= self.progress_cfg.min_confidence])
                 return self._emit_action_once(
                     Wave1State.VERIFY_COUNTER_AGAIN,
                     Wave1ActionName.WAIT,
-                    f"4/4 after cleanup but not stable ({len([r for r in self._stability.last_reads if r[0] == 4])}/3)",
+                    f"4/4 after cleanup but not stable ({strong_count}/{self.wave1_cfg.stable_required_count})",
                     current_time,
                 )
+
+            # PERSISTENT CLEAR FALLBACK for VERIFY_COUNTER_AGAIN
+            at_4_in_persistent = [r for r in self._stability.persistent_reads if r[0] == 4]
+            strong_in_persistent = [r for r in self._stability.persistent_reads if r[0] == 4 and r[1] >= self.progress_cfg.min_confidence]
+            if (
+                len(at_4_in_persistent) >= self.wave1_cfg.persistent_required_total
+                and len(strong_in_persistent) >= self.wave1_cfg.persistent_required_strong
+            ):
+                self._transition_to(Wave1State.ALIGN_TO_EXIT, current_time)
+                return self._emit_action_once(
+                    Wave1State.ALIGN_TO_EXIT,
+                    Wave1ActionName.ALIGN_COMPASS,
+                    f"persistent 4/4 confirmed after cleanup ({len(at_4_in_persistent)}/{len(self._stability.persistent_reads)} reads, "
+                    f"{len(strong_in_persistent)} anchors), aligning to {self.compass_cfg.target_exit_heading}",
+                    current_time,
+                )
+
             if self._cleanup_cycles < self.wave1_cfg.max_cleanup_cycles:
                 self._cleanup_cycles += 1
                 self._transition_to(Wave1State.CLEANUP_IF_NEEDED, current_time)

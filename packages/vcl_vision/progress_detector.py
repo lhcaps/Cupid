@@ -19,9 +19,10 @@ class ProgressDebugInfo:
     text_conf: float
     panel_active: bool
     panel_conf: float
-    candidate_count: int   # filled circle candidates
+    candidate_count: int
     slot_count: int        # empty ring/slot candidates (for 0/4 detection)
-    raw_confidence: float
+    raw_confidence: float   # computed confidence before min-confidence gate
+    accepted_confidence: float = 0.0  # confidence that passed min-confidence gate (0.0 if rejected)
 
 
 class ProgressDetector:
@@ -81,7 +82,7 @@ class ProgressDetector:
         panel_active_text, panel_conf_text = self._detect_panel(crop, mode="text")
 
         if circle_count is not None or slot_count > 0:
-            # Build debug info
+            # Build debug info — raw_confidence and accepted_confidence set below
             debug = ProgressDebugInfo(
                 selected_mode="circle",
                 circle_count=circle_count,
@@ -93,6 +94,7 @@ class ProgressDetector:
                 candidate_count=candidate_count,
                 slot_count=slot_count,
                 raw_confidence=0.0,
+                accepted_confidence=0.0,
             )
 
             if not panel_active_circle:
@@ -105,11 +107,9 @@ class ProgressDetector:
 
             # 0/4 case: no filled circles but visible slot rings
             if circle_count == 0 and slot_count >= cfg.objective_total:
-                # Empty slots detected: this is a valid 0/4 read.
-                # Use slot_conf directly — it reflects actual circularity of detected rings.
-                # Blended with panel confidence to reach the min_confidence threshold.
                 raw_conf = round(panel_conf_circle * 0.25 + slot_conf * 0.75, 3)
                 debug.raw_confidence = raw_conf
+                debug.accepted_confidence = raw_conf  # 0/4 uses slot_conf directly
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
@@ -122,6 +122,7 @@ class ProgressDetector:
                 raw_conf = round(panel_conf_circle * 0.3 + circle_conf * 0.7, 3)
                 debug.raw_confidence = raw_conf
                 if raw_conf < cfg.min_confidence:
+                    debug.accepted_confidence = 0.0
                     return ProgressState(
                         stage_name=cfg.stage_name,
                         dungeon_name=cfg.dungeon_name,
@@ -129,6 +130,7 @@ class ProgressDetector:
                         objective_total=cfg.objective_total,
                         confidence=0.0,
                     ), debug
+                debug.accepted_confidence = raw_conf
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
@@ -156,6 +158,7 @@ class ProgressDetector:
                 candidate_count=0,
                 slot_count=0,
                 raw_confidence=0.0,
+                accepted_confidence=0.0,
             )
             if not panel_active_text:
                 debug.raw_confidence = 0.0
@@ -168,6 +171,7 @@ class ProgressDetector:
             raw_conf = round(panel_conf_text * 0.3 + text_conf * 0.7, 3)
             debug.raw_confidence = raw_conf
             if raw_conf < cfg.min_confidence:
+                debug.accepted_confidence = 0.0
                 return ProgressState(
                     stage_name=cfg.stage_name,
                     dungeon_name=cfg.dungeon_name,
@@ -175,6 +179,7 @@ class ProgressDetector:
                     objective_total=cfg.objective_total,
                     confidence=0.0,
                 ), debug
+            debug.accepted_confidence = raw_conf
             return ProgressState(
                 stage_name=cfg.stage_name,
                 dungeon_name=cfg.dungeon_name,
@@ -191,6 +196,7 @@ class ProgressDetector:
             candidate_count=0,
             slot_count=0,
             raw_confidence=0.0,
+            accepted_confidence=0.0,
         )
         return ProgressState(
             stage_name=cfg.stage_name,

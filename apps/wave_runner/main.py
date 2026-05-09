@@ -316,6 +316,7 @@ def live(
                                 "panel_active": debug_info.panel_active,
                                 "panel_conf": debug_info.panel_conf,
                                 "raw_confidence": debug_info.raw_confidence,
+                                "accepted_confidence": debug_info.accepted_confidence,
                                 "objective_current": progress.objective_current,
                                 "objective_total": progress.objective_total,
                                 "progress_confidence": progress.confidence,
@@ -366,10 +367,20 @@ def live(
                             f"held={sorted(primitives.held_keys)}"
                         )
 
+                    if cfg.debug.vision and debug_info is not None:
+                        raw_c = debug_info.raw_confidence
+                        acpt_c = debug_info.accepted_confidence
+                        raw_label = f"rconf={raw_c:.2f}" if raw_c != progress.confidence else ""
+                        acpt_label = f"aconf={acpt_c:.2f}" if acpt_c != progress.confidence else ""
+                        conf_suffix = " ".join(filter(None, [raw_label, acpt_label]))
+                    else:
+                        conf_suffix = ""
+
                     console.print(
                         f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
                         f"action={action.name.value} obj={progress_str} "
-                        f"pconf={progress.confidence:.2f} cc={compass.confidence:.2f}"
+                        f"pconf={progress.confidence:.2f}{' ' + conf_suffix if conf_suffix else ''} "
+                        f"cc={compass.confidence:.2f}"
                     )
 
                     logger.log(

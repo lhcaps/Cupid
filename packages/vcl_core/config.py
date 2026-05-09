@@ -72,6 +72,14 @@ class Wave1Config(BaseModel):
     verify_window_sec: float = 1.5
     max_cleanup_cycles: int = 2
     next_stage_name: str = "The Forsaken Garden"
+    # Persistent clear stability params (for intermittent confidence fallback)
+    stable_window_size: int = 3
+    stable_required_count: int = 3
+    persistent_window_size: int = 12
+    persistent_required_total: int = 8
+    persistent_required_strong: int = 2
+    # Initial counter check: max objective_current at wave start (Wave 1 = 0)
+    initial_counter_max: int = 0
 
 
 class ObservationHakiConfig(BaseModel):

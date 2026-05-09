@@ -607,6 +607,59 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 3. `python -m apps.wave_runner.main keyboard-test --input-backend pydirectinput` — verify Roblox key receipt
 4. `python -m apps.wave_runner.main live --mode execute --input-backend pydirectinput --capture-backend dxcam --debug-input --debug-vision` — first real execute
 
+### Phase P0.12 — Temporal Progress Stability and Stage Start Guard
+
+**Dependency:** Phase P0.11
+**Status:** COMPLETED
+
+**Goal:** Fix persistent 4/4 with intermittent confidence failing VERIFY_COUNTER, and tighten Wave 1 start verification.
+
+**Context:** Live assist run with dxcam showed HSM reaching VERIFY_COUNTER, repeatedly reading `obj=4/4` but `pconf` alternating between `0.00` and `0.80`. The HSM was stuck for ~15s then FAILSAFE'd. Root causes: (1) `ProgressDetector` returned `confidence=0.0` on low-confidence reads but kept `objective_current=4` — confusing. (2) `CounterStabilityTracker.is_stable_clear()` required all 3 consecutive reads with high confidence — too strict for real captures with intermittent confidence. (3) `guard_stage_verified` only checked `stage_name`, allowing `2/4` at wave start to enter AGGRO.
+
+**Tasks completed:**
+1. **ProgressDetector debug fields** — Added `accepted_confidence` field to `ProgressDebugInfo` dataclass. Every return path now sets `raw_confidence` and `accepted_confidence` before returning. Low-confidence reads still return `confidence=0.0` to HSM but debug JSON carries `raw_confidence` and `accepted_confidence=0.0` for diagnosis.
+2. **Persistent clear fallback** — Added `is_persistent_clear()` to `CounterStabilityTracker` with separate persistent window (default 12 reads). Requires >= 8 reads with `objective_current==4` + >= 2 reads with `confidence >= min_confidence` (anchors). Uses a separate `_persistent_reads` list, updated on every `update()` call alongside the strict window.
+3. **VERIFY_COUNTER persistent clear path** — Added fallback in `VERIFY_COUNTER` state: if persistent window shows >=8 reads at 4/4 with >=2 high-confidence anchors, transition to `ALIGN_TO_EXIT` immediately — without waiting for `verify_window_sec` to expire or FAILSAFE. Log reason includes counts. Also applied to `VERIFY_COUNTER_AGAIN`.
+4. **Wave 1 start guard** — Updated `guard_stage_verified` to reject intermediate counter values at wave start. Counter `1..objective_total-1` is blocked (impossible at wave start without previous kills). Counter `0` (wave not started) and `objective_total` (mid-wave resume) are valid. Config param `initial_counter_max` exposed in `Wave1Config`; defaults to `0` meaning only `0/4` and `4/4` pass.
+5. **Config params for stability tuning** — Added to `Wave1Config`: `stable_window_size`, `stable_required_count`, `persistent_window_size`, `persistent_required_total`, `persistent_required_strong`, `initial_counter_max`. `CounterStabilityTracker.__init__` accepts all these params.
+6. **Console debug output** — When `--debug-vision` enabled, status print now shows `rconf=` and `aconf=` suffixes when they differ from `pconf`, e.g. `pconf=0.00 rconf=0.73 aconf=0.00`. Debug JSON saved to disk includes `accepted_confidence`.
+7. **Test coverage** — Added: `test_persistent_clear_requires_anchor_count`, `test_persistent_clear_true_with_2_anchors`, `test_persistent_clear_false_without_enough_reads`, `test_verify_counter_exits_on_persistent_clear`, `test_verify_stage_ui_accepts_0_4_at_wave_start`, `test_verify_stage_ui_accepts_4_4_at_wave_start`, `test_guard_stage_verified_rejects_counter_too_high`. Fixed `test_live_confidence_gate.py` mock field ordering and corrected test `RISKY_STATES` to match actual runner (6 states, `VERIFY_STAGE_UI` intentionally excluded).
+
+**Files changed:**
+- `packages/vcl_vision/progress_detector.py` — `ProgressDebugInfo` gets `accepted_confidence` field; all return paths set `raw_confidence` and `accepted_confidence`
+- `packages/vcl_hsm/stability.py` — `is_persistent_clear()` method, persistent window params, separate `_persistent_reads` list
+- `packages/vcl_core/config.py` — `Wave1Config` gets: `stable_window_size`, `stable_required_count`, `persistent_window_size`, `persistent_required_total`, `persistent_required_strong`, `initial_counter_max`
+- `packages/vcl_hsm/transitions.py` — `guard_stage_verified` gets `initial_counter_max` param; rejects `1 <= counter < objective_total` at wave start
+- `packages/vcl_hsm/wave1_machine.py` — `VERIFY_COUNTER` and `VERIFY_COUNTER_AGAIN` use persistent clear fallback; `CounterStabilityTracker` initialized with config params; `guard_stage_verified` called with `initial_counter_max`
+- `apps/wave_runner/main.py` — console debug output shows `rconf=`/`aconf=` when `--debug-vision`; debug JSON includes `accepted_confidence`
+- `tests/test_wave1_hsm.py` — 8 new tests for persistent clear and stage verification
+- `tests/test_live_confidence_gate.py` — mock field ordering fixed, test renamed to match actual RISKY_STATES count
+
+**Key design decisions:**
+- Persistent window is separate from strict window — both are updated simultaneously, so either check can fire
+- `is_persistent_clear()` requires BOTH total count threshold AND anchor count threshold — prevents blank crop from clearing
+- `guard_stage_verified` blocks intermediate counters (1..3) but allows 0/4 (fresh wave) and 4/4 (mid-wave resume)
+- `VERIFY_COUNTER` persistent clear fires BEFORE `verify_window_sec` expires — prevents unnecessary FAILSAFE on real captures
+- Progress `confidence=0.0` is preserved for HSM gating, but `raw_confidence` and `accepted_confidence` carry diagnostic info
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `python -m pytest tests/test_progress_detector.py tests/test_wave1_hsm.py tests/test_live_confidence_gate.py tests/test_backends.py tests/test_input_safety.py tests/test_calibrate_regions.py` → 110 passed (13 gate tests ~18min due to mock overhead)
+- `python -m compileall apps packages tools` → PASS
+- `python -m apps.wave_runner.main --help` → PASS
+- `python -m apps.wave_runner.main live --help` → PASS
+- `python -m apps.wave_runner.main keyboard-test --help` → PASS
+
+**Known remaining risks:**
+- Real-world confidence oscillation pattern may differ from the 12-read/8-total/2-anchor parameters; may need tuning per user feedback
+- `persistent_window_size=12` assumes at least 12 frames captured during `VERIFY_COUNTER`; with low FPS this may not fill in time
+- `_count_empty_slots` Canny-edge detection may still produce false slots on UI noise; monitor real assist logs
+
+**Next steps:**
+1. `python -m apps.wave_runner.main live --mode assist --capture-backend dxcam --debug-vision` — expect `persistent 4/4 confirmed` transition to `ALIGN_TO_EXIT` instead of FAILSAFE
+2. Verify `VERIFY_STAGE_UI` now logs `initial_counter_too_high` reason when `obj=2/4` appears at wave start
+3. If persistent clear fires too early (blank crop), increase `persistent_required_total` to 10 or `persistent_required_strong` to 3
+
 ### Phase 8 — Wave 1 MVP Verification & Polish
 
 **Dependency:** Phase P0.8

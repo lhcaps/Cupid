@@ -66,8 +66,18 @@ def guard_stage_verified(
     progress: ProgressState | None,
     expected_stage: str = "Shattered Ramparts",
     min_confidence: float = 0.75,
+    initial_counter_max: int = 0,
 ) -> tuple[bool, str]:
-    """GUARD for VERIFY_STAGE_UI -> AGGRO_WITH_GEPPO."""
+    """GUARD for VERIFY_STAGE_UI -> AGGRO_WITH_GEPPO.
+
+    Args:
+        progress: current progress state
+        expected_stage: expected stage name
+        min_confidence: minimum confidence for stage detection
+        initial_counter_max: maximum acceptable objective_current for Wave 1 start.
+            Defaults to 0 (Wave 1 must start at 0/4). Set higher to allow
+            mid-wave resume. Pass None to disable this check.
+    """
     if progress is None:
         return False, "no_progress_data"
     if progress.stage_name is None:
@@ -80,6 +90,20 @@ def guard_stage_verified(
     expected_lower = expected_stage.lower().replace("'", "").replace(" ", "")
     if stage_lower != expected_lower:
         return False, f"wrong_stage: got {progress.stage_name}, expected {expected_stage}"
+
+    # Initial counter check: reject impossible intermediate counters at wave start.
+    # - Counter 0: valid (wave not started)
+    # - Counter == objective_total: valid (mid-wave resume)
+    # - Counter 1..objective_total-1: invalid at wave start (impossible — enemies can't
+    #   already be killed when the wave hasn't properly started)
+    # - Counter > objective_total: overflow, already handled by overflow check
+    if (
+        initial_counter_max is not None
+        and progress.objective_current is not None
+        and 1 <= progress.objective_current < (progress.objective_total or 4)
+    ):
+        return False, f"initial_counter_too_high: {progress.objective_current}/{progress.objective_total}"
+
     return True, f"stage_verified: {progress.stage_name}"
 
 

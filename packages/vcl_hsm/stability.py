@@ -2,6 +2,12 @@
 
 Also tracks whether the counter has ever shown a high count in the current window,
 to reject impossible resets (e.g., 4/4 -> 0/4) during gameplay.
+
+Supports two modes:
+  - is_stable_clear(): strict — all reads must be high-confidence and show target count.
+  - is_persistent_clear(): lenient — uses a wider window; requires at least K high-confidence
+    anchor frames + enough total reads showing target count. For use in VERIFY_COUNTER when
+    real-world captures have intermittent confidence.
 """
 from __future__ import annotations
 
@@ -22,12 +28,23 @@ class CounterStabilityTracker:
         required_count: int = 3,
         required_objective: int = 4,
         min_confidence: float = 0.65,
+        # Persistent clear params (for intermittent confidence fallback)
+        persistent_window_size: int = 12,
+        persistent_required_total: int = 8,
+        persistent_required_strong: int = 2,
+        persistent_min_strong_confidence: float = 0.75,
     ) -> None:
         self.window_size = window_size
         self.required_count = required_count
         self.required_objective = required_objective
         self.min_confidence = min_confidence
         self._reads: list[tuple[int | None, float]] = []
+        # Persistent window for intermittent-confidence fallback
+        self.persistent_window_size = persistent_window_size
+        self.persistent_required_total = persistent_required_total
+        self.persistent_required_strong = persistent_required_strong
+        self.persistent_min_strong_confidence = persistent_min_strong_confidence
+        self._persistent_reads: list[tuple[int | None, float]] = []
 
     def update(
         self,
@@ -35,10 +52,14 @@ class CounterStabilityTracker:
         objective_total: int | None,
         confidence: float,
     ) -> None:
-        """Record a new progress reading."""
+        """Record a new progress reading in both the strict and persistent windows."""
         self._reads.append((objective_current, confidence))
         if len(self._reads) > self.window_size:
             self._reads.pop(0)
+
+        self._persistent_reads.append((objective_current, confidence))
+        if len(self._persistent_reads) > self.persistent_window_size:
+            self._persistent_reads.pop(0)
 
     def is_stable_clear(self) -> bool:
         """
@@ -59,6 +80,33 @@ class CounterStabilityTracker:
                 qualifying += 1
 
         return qualifying >= self.required_count
+
+    def is_persistent_clear(self) -> bool:
+        """
+        Return True when the persistent window shows:
+        - At least persistent_required_total reads with objective_current == required_objective
+          (regardless of confidence — raw count is visible even when confidence flickers)
+        - At least persistent_required_strong reads with objective_current == required_objective
+          AND confidence >= persistent_min_strong_confidence (anchor frames)
+
+        This is the fallback for real-world captures where per-frame confidence
+        is intermittent but the count is visibly consistent.
+        """
+        if len(self._persistent_reads) < self.persistent_required_total:
+            return False
+
+        total_at_objective = 0
+        strong_at_objective = 0
+        for obj_cur, conf in self._persistent_reads:
+            if obj_cur == self.required_objective:
+                total_at_objective += 1
+                if conf >= self.persistent_min_strong_confidence:
+                    strong_at_objective += 1
+
+        return (
+            total_at_objective >= self.persistent_required_total
+            and strong_at_objective >= self.persistent_required_strong
+        )
 
     def saw_high_count(self) -> bool:
         """
@@ -98,6 +146,11 @@ class CounterStabilityTracker:
     def last_reads(self) -> list[tuple[int | None, float]]:
         return list(self._reads)
 
+    @property
+    def persistent_reads(self) -> list[tuple[int | None, float]]:
+        return list(self._persistent_reads)
+
     def reset(self) -> None:
         """Clear all recorded reads."""
         self._reads.clear()
+        self._persistent_reads.clear()

@@ -725,3 +725,140 @@ class TestWave1HSM:
         # The impossible drop should be rejected, keeping HSM in VERIFY_COUNTER
         assert hsm.state == Wave1State.VERIFY_COUNTER, \
             f"VERIFY_COUNTER should not accept impossible 4/4 -> 0/4 drop, got {hsm.state}"
+
+    def test_persistent_clear_requires_anchor_count(self):
+        """is_persistent_clear must require at least 2 high-confidence anchors."""
+        from vcl_hsm.stability import CounterStabilityTracker
+
+        t = CounterStabilityTracker(
+            persistent_window_size=12,
+            persistent_required_total=8,
+            persistent_required_strong=2,
+            persistent_min_strong_confidence=0.75,
+        )
+        # 8 reads at 4/4 but 0 high-confidence anchors
+        for _ in range(8):
+            t.update(objective_current=4, objective_total=4, confidence=0.50)
+
+        assert not t.is_persistent_clear(), (
+            "is_persistent_clear should be False with 0 high-confidence anchors"
+        )
+
+    def test_persistent_clear_true_with_2_anchors(self):
+        """is_persistent_clear returns True with >=8 reads at 4/4 and >=2 high-confidence anchors."""
+        from vcl_hsm.stability import CounterStabilityTracker
+
+        t = CounterStabilityTracker(
+            persistent_window_size=12,
+            persistent_required_total=8,
+            persistent_required_strong=2,
+            persistent_min_strong_confidence=0.75,
+        )
+        # 8 reads at 4/4, 2 with high confidence
+        for i in range(8):
+            conf = 0.80 if i < 2 else 0.50
+            t.update(objective_current=4, objective_total=4, confidence=conf)
+
+        assert t.is_persistent_clear(), (
+            "is_persistent_clear should be True with 8 reads at 4/4 and 2 anchors"
+        )
+
+    def test_persistent_clear_false_without_enough_reads(self):
+        """is_persistent_clear returns False when <8 total reads at 4/4."""
+        from vcl_hsm.stability import CounterStabilityTracker
+
+        t = CounterStabilityTracker(
+            persistent_window_size=12,
+            persistent_required_total=8,
+            persistent_required_strong=2,
+            persistent_min_strong_confidence=0.75,
+        )
+        # Only 5 reads at 4/4
+        for i in range(5):
+            conf = 0.80 if i < 2 else 0.50
+            t.update(objective_current=4, objective_total=4, confidence=conf)
+
+        assert not t.is_persistent_clear(), (
+            "is_persistent_clear should be False with only 5 reads (< 8)"
+        )
+
+    def test_verify_counter_exits_on_persistent_clear(self):
+        """VERIFY_COUNTER transitions to ALIGN_TO_EXIT when persistent 4/4 is confirmed."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_COUNTER, 0.0)
+        hsm._stability.reset()
+
+        # Feed enough reads to populate the persistent window: 8 at 4/4 with 2 high-confidence
+        for i in range(8):
+            conf = 0.80 if i < 2 else 0.50
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(current=4, total=4, confidence=conf),
+                compass=make_compass(),
+                current_time=0.1 * (i + 1),
+            )
+
+        assert hsm.state == Wave1State.ALIGN_TO_EXIT, \
+            f"VERIFY_COUNTER should exit to ALIGN_TO_EXIT on persistent 4/4, got {hsm.state}"
+
+    def test_verify_stage_ui_accepts_0_4_at_wave_start(self):
+        """VERIFY_STAGE_UI must transition to AGGRO when initial counter is 0/4 with high confidence."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_STAGE_UI, tick())
+
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, total=4, confidence=0.85),
+            compass=make_compass(),
+            current_time=tick(),
+        )
+
+        assert hsm.state == Wave1State.AGGRO_WITH_GEPPO, \
+            f"VERIFY_STAGE_UI should transition to AGGRO at 0/4, got {hsm.state}"
+
+    def test_verify_stage_ui_accepts_4_4_at_wave_start(self):
+        """VERIFY_STAGE_UI must transition to AGGRO when initial counter is 4/4 (resume mid-wave)."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_STAGE_UI, tick())
+
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=4, total=4, confidence=0.85),
+            compass=make_compass(),
+            current_time=tick(),
+        )
+
+        assert hsm.state == Wave1State.AGGRO_WITH_GEPPO, \
+            f"VERIFY_STAGE_UI should transition to AGGRO at 4/4 (resume mid-wave), got {hsm.state}"
+
+    def test_guard_stage_verified_rejects_counter_too_high(self):
+        """guard_stage_verified must reject objective_current in range [1, objective_total).
+        Counter=0 (wave not started) and counter=objective_total (resume mid-wave) are valid."""
+        from vcl_hsm.transitions import guard_stage_verified
+
+        # Counter 1..total-1 should be rejected at wave start (impossible)
+        p2 = make_progress(current=2, total=4, confidence=0.85)
+        ok, reason = guard_stage_verified(p2)
+        assert not ok, f"Should reject counter=2: {reason}"
+        assert "initial_counter_too_high" in reason
+
+        # Counter=0 should pass
+        ok2, reason2 = guard_stage_verified(make_progress(current=0, total=4, confidence=0.85))
+        assert ok2, f"Should accept counter=0: {reason2}"
+
+        # Counter=4 (resume mid-wave) should pass
+        ok3, reason3 = guard_stage_verified(make_progress(current=4, total=4, confidence=0.85))
+        assert ok3, f"Should accept counter=4 (resume): {reason3}"
+
+        # initial_counter_max=None disables the check
+        ok4, reason4 = guard_stage_verified(make_progress(current=2, total=4, confidence=0.85), initial_counter_max=None)
+        assert ok4, f"initial_counter_max=None should disable check: {reason4}"
