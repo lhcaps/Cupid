@@ -48,14 +48,14 @@ keybinds:
   dash: "q"
   blitz_strike: "e"
 
-# Progress UI crop regions (from video analysis)
-# Counter "x/4": TOP-RIGHT at x=1380-1620, y=110-150
-# Wave panel: TOP-RIGHT at x=1500-1760, y=0-100
-# Combined progress UI area: x=1300-1850, y=0-180
+# Progress UI crop regions (live dxcam 2560x1440, text counter on left panel)
+# Counter "x / 4": LEFT at x=110-240, y=545-610
+# Wave panel: LEFT at x=0-500, y=450-560
+# Combined progress UI area: x=0-600, y=450-650
 progress_ui:
-  crop: [1300, 0, 1850, 180]
-  counter_crop: [1380, 110, 1620, 150]
-  wave_panel_crop: [1500, 0, 1760, 100]
+  crop: [0, 450, 600, 650]
+  counter_crop: [110, 545, 240, 610]
+  wave_panel_crop: [0, 450, 500, 560]
   stage_name: "Shattered Ramparts"
   dungeon_name: "Cupid's Ruin"
   objective_total: 4

@@ -74,14 +74,60 @@ class ProgressDetector:
             )
             return ProgressState(confidence=0.0), debug
 
-        circle_result = self._count_circles(crop)
         text_result = self._count_text(crop)
+        circle_result = self._count_circles(crop)
 
         circle_count, circle_conf, candidate_count, slot_count, slot_conf = circle_result
         text_count, text_conf = text_result
 
         panel_active_circle, panel_conf_circle = self._detect_panel(crop, mode="circle")
         panel_active_text, panel_conf_text = self._detect_panel(crop, mode="text")
+
+        # Text counters are made of bright glyphs ("0 / 4") and can otherwise be
+        # mistaken for circle blobs. Prefer a structured text read when present.
+        if text_count is not None and text_conf >= 0.65:
+            panel_conf_text = max(panel_conf_text, min(1.0, text_conf))
+            panel_active_text = panel_active_text or panel_conf_text >= 0.65
+            debug = ProgressDebugInfo(
+                selected_mode="text",
+                circle_count=None, circle_conf=0.0,
+                text_count=text_count,
+                text_conf=text_conf,
+                panel_active=panel_active_text,
+                panel_conf=panel_conf_text,
+                candidate_count=0,
+                slot_count=0,
+                slot_conf=0.0,
+                raw_confidence=0.0,
+                accepted_confidence=0.0,
+            )
+            if not panel_active_text:
+                debug.raw_confidence = 0.0
+                return ProgressState(
+                    stage_name=cfg.stage_name,
+                    dungeon_name=cfg.dungeon_name,
+                    confidence=0.0,
+                ), debug
+
+            raw_conf = round(panel_conf_text * 0.2 + text_conf * 0.8, 3)
+            debug.raw_confidence = raw_conf
+            if raw_conf < cfg.min_confidence:
+                debug.accepted_confidence = 0.0
+                return ProgressState(
+                    stage_name=cfg.stage_name,
+                    dungeon_name=cfg.dungeon_name,
+                    objective_current=text_count,
+                    objective_total=cfg.objective_total,
+                    confidence=0.0,
+                ), debug
+            debug.accepted_confidence = raw_conf
+            return ProgressState(
+                stage_name=cfg.stage_name,
+                dungeon_name=cfg.dungeon_name,
+                objective_current=text_count,
+                objective_total=cfg.objective_total,
+                confidence=raw_conf,
+            ), debug
 
         if circle_count is not None or slot_count > 0:
             # Build debug info — raw_confidence and accepted_confidence set below
@@ -226,11 +272,19 @@ class ProgressDetector:
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
         if mode == "text":
-            _, binary = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
-            bright_pct = np.sum(binary > 0) / binary.size
-            is_active = 0.3 < bright_pct < 0.97
-            conf = min(1.0, bright_pct * 1.5) if is_active else 0.0
-            return is_active, round(conf, 3)
+            _, bright = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
+            num_labels, _, stats, _ = cv2.connectedComponentsWithStats(
+                bright, connectivity=8
+            )
+            text_like = 0
+            for i in range(1, num_labels):
+                area = stats[i, cv2.CC_STAT_AREA]
+                width = stats[i, cv2.CC_STAT_WIDTH]
+                height = stats[i, cv2.CC_STAT_HEIGHT]
+                if 8 <= area <= 2500 and width >= 2 and height >= 4:
+                    text_like += 1
+            conf = min(1.0, text_like / 8.0)
+            return conf >= 0.35, round(conf, 3)
 
         else:  # circle mode
             bright_counts = {}
@@ -441,19 +495,12 @@ class ProgressDetector:
 
     def _count_text(self, crop: np.ndarray) -> tuple[int | None, float]:
         """
-        Count dark text digit shapes in counter region to infer current objective.
+        Count bright text glyphs in counter region to infer current objective.
 
-        The "0 / 4" counter shows:
-          - Dark text on bright panel background
-          - Multiple digit shapes separated by slashes/spaces
-          - Row y~490 has all digit clusters
-
-        Strategy:
-          1. Invert threshold: find DARK pixels (text is black/gray)
-          2. Connected components on dark regions
-          3. Filter for small compact shapes (digit candidates)
-          4. Row-based grouping: top row = numerator, bottom row = denominator
-          5. Infer current from numerator digit(s) width
+        Live GPO renders the text counter as bright stylized glyphs, e.g. "0 / 4".
+        We only accept a structured three-glyph sequence: numerator, slash,
+        denominator. This prevents random textured background from becoming a
+        high-confidence fake 0/4 read.
         """
         cfg = self.config
 
@@ -477,94 +524,128 @@ class ProgressDetector:
             return None, 0.0
 
         gray = cv2.cvtColor(counter_crop, cv2.COLOR_BGR2GRAY)
+        best_result: tuple[int, float] | None = None
 
-        best_result: tuple | None = None
-
-        for text_thresh in [60, 70, 80, 90, 100, 110, 120]:
-            _, binary = cv2.threshold(gray, text_thresh, 255, cv2.THRESH_BINARY_INV)
-
-            num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+        for text_thresh in [120, 140, 160, 180, 200]:
+            _, binary = cv2.threshold(gray, text_thresh, 255, cv2.THRESH_BINARY)
+            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
                 binary, connectivity=8
             )
 
-            digit_candidates = []
+            glyphs: list[dict] = []
             for i in range(1, num_labels):
-                area = stats[i, cv2.CC_STAT_AREA]
-                if area < 10 or area > 2000:
+                area = int(stats[i, cv2.CC_STAT_AREA])
+                if area < 8 or area > 2500:
                     continue
 
-                cx_rel = int(centroids[i][0])
-                cy_rel = int(centroids[i][1])
-                sw = stats[i, cv2.CC_STAT_WIDTH]
-                sh = stats[i, cv2.CC_STAT_HEIGHT]
-                if sw < 3 or sh < 5:
+                x = int(stats[i, cv2.CC_STAT_LEFT])
+                y = int(stats[i, cv2.CC_STAT_TOP])
+                sw = int(stats[i, cv2.CC_STAT_WIDTH])
+                sh = int(stats[i, cv2.CC_STAT_HEIGHT])
+                if sw < 2 or sh < 5:
                     continue
 
                 aspect = sw / max(1, sh)
-                if aspect > 3.0:
+                if not (0.2 <= aspect <= 3.0):
                     continue
 
-                digit_candidates.append({
-                    "x": cx_rel, "y": cy_rel,
-                    "w": sw, "h": sh, "area": area, "aspect": aspect
+                roi = (labels[y : y + sh, x : x + sw] == i).astype(np.uint8) * 255
+                glyphs.append({
+                    "x": x,
+                    "y": y,
+                    "cx": float(centroids[i][0]),
+                    "cy": float(centroids[i][1]),
+                    "w": sw,
+                    "h": sh,
+                    "area": area,
+                    "aspect": aspect,
+                    "fill": area / max(1, sw * sh),
+                    "holes": self._count_glyph_holes(roi),
+                    "roi": roi,
                 })
 
-            if len(digit_candidates) < 2:
+            if len(glyphs) < 3:
                 continue
 
-            mid_y = ch / 2
-            top_row = [d for d in digit_candidates if d["y"] < mid_y]
-            bot_row = [d for d in digit_candidates if d["y"] >= mid_y]
+            glyphs.sort(key=lambda g: g["x"])
+            for i in range(0, len(glyphs) - 2):
+                first, slash, denom = glyphs[i], glyphs[i + 1], glyphs[i + 2]
 
-            if not bot_row:
-                continue
+                if not self._same_text_row(first, slash, denom, ch):
+                    continue
+                if not self._looks_like_counter_slash(slash, first, denom):
+                    continue
+                if not self._looks_like_denominator_four(denom):
+                    continue
 
-            top_row.sort(key=lambda d: d["x"])
-            bot_row.sort(key=lambda d: d["x"])
+                result_count, digit_conf = self._classify_numerator(first, denom)
+                result_count = max(0, min(result_count, cfg.objective_total))
 
-            def width_to_digit(w: int, h: int) -> int | None:
-                aspect = w / max(1, h)
-                if aspect < 0.3:
-                    return 1
-                if w <= 12:
-                    return 1
-                if w <= 20:
-                    return None
-                if w <= 30:
-                    return 2
-                if w <= 45:
-                    return 3
-                return 4
+                span = (denom["x"] + denom["w"]) - first["x"]
+                span_score = min(1.0, span / max(1, cw * 0.45))
+                slash_score = min(1.0, slash["h"] / max(1, max(first["h"], denom["h"])))
+                structure_conf = min(1.0, 0.55 + 0.20 * span_score + 0.15 * slash_score)
+                conf = round(min(1.0, structure_conf * 0.55 + digit_conf * 0.45), 3)
 
-            numerator: int | None = None
-            if top_row:
-                widest_top = max(top_row, key=lambda d: d["w"])
-                numerator = width_to_digit(widest_top["w"], widest_top["h"])
-
-            if bot_row:
-                widest_bot = max(bot_row, key=lambda d: d["w"])
-                bot_digit = width_to_digit(widest_bot["w"], widest_bot["h"])
-
-                if numerator is not None:
-                    result_count = numerator
-                else:
-                    total_w = sum(d["w"] for d in bot_row)
-                    if total_w > 50:
-                        result_count = 0
-                    else:
-                        result_count = 0
-
-                total_w_all = sum(d["w"] for d in digit_candidates)
-                num_shapes = len(digit_candidates)
-
-                conf = min(1.0, (num_shapes / 6.0) * 0.7 + (total_w_all / 200.0) * 0.3)
-
-                if conf > 0.5:
-                    result_count = max(0, min(result_count, cfg.objective_total))
-                    if best_result is None or conf > best_result[1]:
-                        best_result = (result_count, round(conf, 3))
+                if best_result is None or conf > best_result[1]:
+                    best_result = (result_count, conf)
 
         if best_result is None:
             return None, 0.0
 
         return best_result
+
+    def _count_glyph_holes(self, roi: np.ndarray) -> int:
+        contours, hierarchy = cv2.findContours(
+            roi, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if hierarchy is None:
+            return 0
+        holes = 0
+        for i in range(len(contours)):
+            if hierarchy[0][i][3] != -1:
+                holes += 1
+        return holes
+
+    def _same_text_row(self, first: dict, slash: dict, denom: dict, height: int) -> bool:
+        centers = [first["cy"], slash["cy"], denom["cy"]]
+        return max(centers) - min(centers) <= max(12.0, height * 0.30)
+
+    def _looks_like_counter_slash(self, slash: dict, first: dict, denom: dict) -> bool:
+        if slash["x"] <= first["x"] or slash["x"] >= denom["x"]:
+            return False
+        if slash["h"] < min(first["h"], denom["h"]) * 0.55:
+            return False
+        return slash["aspect"] <= 0.9
+
+    def _looks_like_denominator_four(self, glyph: dict) -> bool:
+        if glyph["holes"] > 0:
+            return False
+        if not (0.35 <= glyph["aspect"] <= 1.1):
+            return False
+        return 0.20 <= glyph["fill"] <= 0.85
+
+    def _classify_numerator(self, glyph: dict, denominator_four: dict) -> tuple[int, float]:
+        if glyph["holes"] >= 1:
+            return 0, 0.95
+
+        similarity = self._glyph_similarity(glyph["roi"], denominator_four["roi"])
+        if similarity >= 0.70:
+            return self.config.objective_total, max(0.86, similarity)
+
+        if glyph["w"] <= denominator_four["w"] * 0.65 or glyph["aspect"] < 0.45:
+            return 1, 0.80
+
+        # For 2/4 or 3/4, exact distinction is less important to the HSM than
+        # "not clear yet"; keep the read high-confidence but safely incomplete.
+        return 2, 0.78
+
+    def _glyph_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        size = (24, 32)
+        aa = cv2.resize(a, size, interpolation=cv2.INTER_AREA) > 0
+        bb = cv2.resize(b, size, interpolation=cv2.INTER_AREA) > 0
+        union = np.logical_or(aa, bb).sum()
+        if union == 0:
+            return 0.0
+        inter = np.logical_and(aa, bb).sum()
+        return float(inter / union)

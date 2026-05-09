@@ -134,9 +134,9 @@ BOOT → WAIT_PLAYER_CONTROL → SETUP_PIKA_V2 → ENTER_STAGE
 → MOVE_NEXT_STAGE → CONFIRM_STAGE_TRANSITION → DONE
 ```
 
-## Key Discovery: Counter is Circles, Not Text
+## Key Discovery: Counter Has Two Render Modes
 
-Wave counter renders as **filled circles** (enemy killed) vs unfilled (enemy alive), not text "x/4". Detection uses grayscale threshold + connected components + circle shape filter.
+Wave counter can render either as **left-side text** (`0 / 4`) in the current live dxcam layout or as filled/unfilled circles in older/fullscreen captures. Detection supports both, but live default crops target the left text progress panel.
 
 ## Key Constraints
 

@@ -45,9 +45,9 @@ class CropRegion(BaseModel):
 
 
 class ProgressUIConfig(BaseModel):
-    crop: CropRegion = Field(default_factory=lambda: CropRegion(x1=1300, y1=0, x2=1850, y2=180))
-    counter_crop: CropRegion = Field(default_factory=lambda: CropRegion(x1=1380, y1=110, x2=1620, y2=150))
-    wave_panel_crop: CropRegion = Field(default_factory=lambda: CropRegion(x1=1500, y1=0, x2=1760, y2=100))
+    crop: CropRegion = Field(default_factory=lambda: CropRegion(x1=0, y1=450, x2=600, y2=650))
+    counter_crop: CropRegion = Field(default_factory=lambda: CropRegion(x1=110, y1=545, x2=240, y2=610))
+    wave_panel_crop: CropRegion = Field(default_factory=lambda: CropRegion(x1=0, y1=450, x2=500, y2=560))
     stage_name: str = "Shattered Ramparts"
     dungeon_name: str = "Cupid's Ruin"
     objective_total: int = 4

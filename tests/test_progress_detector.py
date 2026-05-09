@@ -1,6 +1,8 @@
 """Tests for ProgressDetector — filled circle counter detection."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import cv2
@@ -8,6 +10,9 @@ import cv2
 from vcl_vision.progress_detector import ProgressDetector
 from vcl_core.schemas import ProgressState
 from vcl_core.config import ProgressUIConfig, CropRegion
+
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _make_counter_crop(
@@ -361,6 +366,66 @@ class TestProgressDetector:
         result = det.detect(frame)
         assert result.confidence == 0.0
         assert result.objective_current is None
+
+    def test_live_text_counter_fixture_reads_zero_of_four(self):
+        """The live left-side text counter fixture should read 0/4 confidently."""
+        frame = cv2.imread(str(ROOT / "datasets" / "fixtures" / "live_wave1_nonfullscreen.png"))
+        assert frame is not None
+
+        sx = frame.shape[1] / 2560
+        sy = frame.shape[0] / 1440
+
+        def scaled(box: tuple[int, int, int, int]) -> CropRegion:
+            return CropRegion(
+                x1=int(box[0] * sx),
+                y1=int(box[1] * sy),
+                x2=int(box[2] * sx),
+                y2=int(box[3] * sy),
+            )
+
+        cfg = ProgressUIConfig(
+            crop=scaled((0, 450, 600, 650)),
+            counter_crop=scaled((110, 545, 240, 610)),
+            wave_panel_crop=scaled((0, 450, 500, 560)),
+            objective_total=4,
+            min_confidence=0.75,
+        )
+
+        result, debug_info = ProgressDetector(cfg).detect_with_debug(frame)
+
+        assert debug_info.selected_mode == "text"
+        assert result.objective_current == 0
+        assert result.objective_total == 4
+        assert result.confidence >= 0.75
+
+    def test_old_top_right_crop_does_not_fake_zero_of_four(self):
+        """A misaligned texture/compass crop must not become a confident 0/4 read."""
+        frame = cv2.imread(str(ROOT / "datasets" / "fixtures" / "live_wave1_nonfullscreen.png"))
+        assert frame is not None
+
+        sx = frame.shape[1] / 2560
+        sy = frame.shape[0] / 1440
+
+        def scaled(box: tuple[int, int, int, int]) -> CropRegion:
+            return CropRegion(
+                x1=int(box[0] * sx),
+                y1=int(box[1] * sy),
+                x2=int(box[2] * sx),
+                y2=int(box[3] * sy),
+            )
+
+        cfg = ProgressUIConfig(
+            crop=scaled((1300, 0, 1850, 180)),
+            counter_crop=scaled((1380, 110, 1620, 150)),
+            wave_panel_crop=scaled((1500, 0, 1760, 100)),
+            objective_total=4,
+            min_confidence=0.75,
+        )
+
+        result, debug_info = ProgressDetector(cfg).detect_with_debug(frame)
+
+        assert debug_info.selected_mode is None or result.confidence < 0.75
+        assert result.objective_current is None or result.confidence < 0.75
 
     def test_progress_detector_zero_of_four_valid_confidence(self):
         """0 filled circles on active panel should return low confidence, not 0/4 high confidence.

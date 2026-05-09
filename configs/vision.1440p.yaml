@@ -5,9 +5,9 @@ screen:
   fps_target: 20
 
 progress_ui:
-  crop: [1300, 0, 1850, 180]
-  counter_crop: [1340, 100, 1620, 135]
-  wave_panel_crop: [1300, 0, 1850, 180]
+  crop: [0, 450, 600, 650]
+  counter_crop: [110, 545, 240, 610]
+  wave_panel_crop: [0, 450, 500, 560]
   min_confidence: 0.75
 
 compass:

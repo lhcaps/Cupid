@@ -14,6 +14,7 @@ Key invariant tested:
 """
 from __future__ import annotations
 
+import re
 from unittest.mock import patch, MagicMock
 
 import numpy as np
@@ -199,18 +200,14 @@ class TestLiveConfidenceGateIntegration:
 
         # All patches
         with patch("vcl_input.executor.InputExecutor.execute", MockExecute):
-            with patch("vcl_input.primitives.InputPrimitives"):
+            with patch("apps.wave_runner.main.InputPrimitives"):
                 with patch(
-                    "vcl_input.primitives.InputPrimitives.release_held_keys",
-                    on_release,
+                    "apps.wave_runner.main.EmergencyStop",
+                    return_value=mock_estop,
                 ):
                     with patch(
-                        "vcl_input.emergency_stop.EmergencyStop",
-                        return_value=mock_estop,
+                        "apps.wave_runner.main.setup_ctrl_c_handler"
                     ):
-                        with patch(
-                            "vcl_input.emergency_stop.setup_ctrl_c_handler"
-                        ):
                             # Mock window focus and input backend so preflight passes
                             with patch(
                                 "apps.wave_runner.main.ensure_window_focused",
@@ -221,7 +218,7 @@ class TestLiveConfidenceGateIntegration:
                                     return_value=MagicMock(name="mock_input_backend"),
                                 ):
                                     with patch(
-                                        "vcl_vision.frame_source.LiveFrameSource",
+                                        "apps.wave_runner.main.LiveFrameSource",
                                         MockLFS,
                                     ):
                                         with patch(
@@ -262,7 +259,7 @@ class TestLiveConfidenceGateIntegration:
         return {
             "tick_call_count": len(tick_tracking),
             "release_keys_count": len(release_calls),
-            "printed_output": output.getvalue(),
+            "printed_output": re.sub(r"\x1b\[[0-9;]*m", "", output.getvalue()),
             "execute_call_count": len(execute_calls),
         }
 

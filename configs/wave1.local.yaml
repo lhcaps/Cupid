@@ -1,26 +1,25 @@
 screen: {width: 2560, height: 1440, fps_target: 20}
 keybinds: {slot_pika_v2: '2', armament_haki: j, observation_haki: g, jump: space,
   forward: w, backward: s, radiant_kick: r, dash: q, blitz_strike: e}
-# Crops from pixel analysis of execute_run1.mp4 (2560x1440):
-# Progress UI is in BOTTOM-LEFT corner:
-#   - Text rows at y=990-1132, x=25-400
-#   - Counter "X / 4" at y=1080-1132, x=25-400
-#   - Wave/stage name at y=990-1060, x=25-400
-# Compass is at TOP-LEFT (not top-center as previously assumed):
-#   - Text cluster at y=12-56, x=16-216
+# Crops from live dxcam calibration (2560x1440):
+# Progress UI is the LEFT wave panel, not the bottom-left buff/money stack.
+#   - Counter "X / 4" at y=545-610, x=110-240
+#   - Wave/stage name at y=450-560, x=0-500
+# Compass active heading is at TOP-CENTER:
+#   - Text cluster around y=10-60, x=1200-1400
 # COMPASS TARGET: S (South = 180 degrees)
 # CROPS ARE SCALED FOR THIS VIDEO'S RESOLUTION (2560x1440)
 # If game resolution differs, re-calibrate
 progress_ui:
-  crop: [25, 985, 400, 1135]
-  counter_crop: [25, 1080, 400, 1135]
-  wave_panel_crop: [25, 985, 400, 1065]
+  crop: [0, 450, 600, 650]
+  counter_crop: [110, 545, 240, 610]
+  wave_panel_crop: [0, 450, 500, 560]
   stage_name: Shattered Ramparts
   dungeon_name: Cupid's Ruin
   objective_total: 4
   min_confidence: 0.75
 compass:
-  crop: [15, 5, 220, 60]
+  crop: [1200, 10, 1400, 60]
   target_exit_heading: S
   heading_tolerance_deg: 15
   rotate_timeout_sec: 3.0

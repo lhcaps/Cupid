@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import sys as _sys
 from os.path import dirname as _dn, abspath as _ap
+from typing import Any
 
 _ROOT = _ap(_dn(_dn(_dn(__file__))))
 if _ROOT not in _sys.path:
     _sys.path.insert(0, _ROOT)
 del _sys, _dn, _ap, _ROOT
 
-from .main import app
+
+def __getattr__(name: str) -> Any:
+    if name == "app":
+        from .main import app
+
+        return app
+    raise AttributeError(name)
 
 __all__ = ["app"]

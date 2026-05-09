@@ -16,9 +16,9 @@ keybinds:
   blitz_strike: "e"
 
 progress_ui:
-  crop: [1300, 0, 1850, 180]
-  counter_crop: [1380, 110, 1620, 150]
-  wave_panel_crop: [1500, 0, 1760, 100]
+  crop: [0, 450, 600, 650]
+  counter_crop: [110, 545, 240, 610]
+  wave_panel_crop: [0, 450, 500, 560]
   stage_name: "Shattered Ramparts"
   dungeon_name: "Cupid's Ruin"
   objective_total: 4

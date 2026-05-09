@@ -307,8 +307,8 @@ def live(
                             counter_crop=cnt_crop,
                             debug_info={
                                 "hsm_state": hsm.state.value,
-                                "action_name": action.name.value,
-                                "action_reason": action.reason,
+                                "action_name": Wave1ActionName.WAIT.value,
+                                "action_reason": "vision_sample_before_hsm_tick",
                                 "mode": debug_info.selected_mode,
                                 "candidates": debug_info.candidate_count,
                                 "slots": debug_info.slot_count,
