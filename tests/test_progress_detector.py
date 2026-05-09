@@ -231,3 +231,41 @@ class TestProgressDetector:
         result = det.detect(frame)
         assert result.confidence == 0.0
         assert result.objective_current is None
+
+    def test_progress_detector_zero_of_four_valid_confidence(self):
+        """0 filled circles with active wave panel should return confidence >= 0.70."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+        )
+        panel = _make_wave_panel(width=550, height=180)
+        counter = _make_counter_crop(filled=0, unfilled=4)
+        frame = _make_full_frame(counter, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        result = det.detect(frame)
+
+        assert result.objective_current == 0
+        assert result.objective_total == 4
+        assert result.confidence >= 0.60, \
+            f"0/4 should have enough confidence for stage verification, got {result.confidence}"
+
+    def test_progress_detector_clamps_noise_above_total(self):
+        """Noise detecting more than objective_total circles must be clamped to objective_total."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+        )
+        panel = _make_wave_panel(width=550, height=180)
+        counter = _make_counter_crop(filled=4, unfilled=4)
+        frame = _make_full_frame(counter, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        result = det.detect(frame)
+
+        assert result.objective_current <= cfg.objective_total, \
+            f"objective_current ({result.objective_current}) should be clamped to objective_total ({cfg.objective_total})"

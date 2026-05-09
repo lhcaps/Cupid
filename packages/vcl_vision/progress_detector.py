@@ -195,7 +195,10 @@ class ProgressDetector:
         filled_count = len(candidates)
 
         if filled_count == 0:
-            return 0, 0.0
+            return 0, 0.70
+
+        if filled_count > cfg.objective_total:
+            filled_count = cfg.objective_total
 
         avg_area = sum(c["area"] for c in candidates) / len(candidates)
         area_score = min(1.0, avg_area / 150.0)

@@ -62,6 +62,7 @@ class Wave1Config(BaseModel):
     radiant_kick_charge_ms: int = 2000
     damage_register_wait_ms: int = 2200
     max_cleanup_cycles: int = 2
+    next_stage_name: str = "The Forsaken Garden"
 
 
 class ObservationHakiConfig(BaseModel):

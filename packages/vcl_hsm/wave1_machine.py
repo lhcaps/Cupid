@@ -55,7 +55,6 @@ class Wave1HSM:
         self._cleanup_cycles = 0
         self._observation_scans = 0
         self._radiant_kick_casts = 0
-        self._geppo_count = 0
         self._haki_scan_frames: list = []
         self._action_history: list[Wave1Action] = []
         self._stopped = False
@@ -69,6 +68,8 @@ class Wave1HSM:
 
         self._action_emitted: set[str] = set()
         self._compass_forced = False
+        self._radiant_released_at: float | None = None
+        self._state_entry_id: int = 0
 
     def tick(
         self,
@@ -188,7 +189,7 @@ class Wave1HSM:
                 return self._emit_action_once(
                     Wave1State.AGGRO_WITH_GEPPO,
                     Wave1ActionName.GEPPO_STACK,
-                    f"stage verified, starting geppo ({self._geppo_count}/{self.wave1_cfg.geppo_count})",
+                    f"stage verified, starting geppo ({self.wave1_cfg.geppo_count}x)",
                     current_time,
                 )
             return self._emit_action_once(
@@ -199,9 +200,9 @@ class Wave1HSM:
             )
 
         if state == Wave1State.AGGRO_WITH_GEPPO:
-            self._geppo_count += 1
+            elapsed = current_time - self._state_entered_at
             ok, reason = guard_geppo_done(
-                self._geppo_count, self.wave1_cfg,
+                self.wave1_cfg.geppo_count, self.wave1_cfg,
                 self._state_entered_at, current_time,
             )
             if ok:
@@ -210,19 +211,21 @@ class Wave1HSM:
                 return self._emit_action_once(
                     Wave1State.CAST_CHARGED_RADIANT_KICK,
                     Wave1ActionName.HOLD_RADIANT_KICK,
-                    f"geppo done ({self._geppo_count}x), casting charged radiant kick",
+                    f"geppo done ({self.wave1_cfg.geppo_count}x), casting charged radiant kick",
                     current_time,
                 )
             return self._emit_action_once(
                 Wave1State.AGGRO_WITH_GEPPO,
                 Wave1ActionName.GEPPO_STACK,
-                f"geppo ({self._geppo_count}/{self.wave1_cfg.geppo_count}): {reason}",
+                f"aggro_wait: {elapsed:.1f}s (geppo count={self.wave1_cfg.geppo_count})",
                 current_time,
             )
 
         if state == Wave1State.CAST_CHARGED_RADIANT_KICK:
             elapsed = current_time - self._state_entered_at
-            if elapsed < self.wave1_cfg.radiant_kick_charge_ms / 1000.0:
+            charge_done = elapsed >= self.wave1_cfg.radiant_kick_charge_ms / 1000.0
+
+            if not charge_done:
                 return self._emit_action_once(
                     Wave1State.CAST_CHARGED_RADIANT_KICK,
                     Wave1ActionName.HOLD_RADIANT_KICK,
@@ -230,24 +233,33 @@ class Wave1HSM:
                     current_time,
                 )
 
-            ok_damage, _ = guard_damage_registered(
-                self._state_entered_at, self.wave1_cfg, current_time,
-            )
-            if not ok_damage:
+            if self._radiant_released_at is None:
+                self._radiant_released_at = current_time
                 return self._emit_action_once(
                     Wave1State.CAST_CHARGED_RADIANT_KICK,
-                    Wave1ActionName.WAIT,
-                    f"waiting_damage_register: {elapsed:.1f}s",
+                    Wave1ActionName.RELEASE_RADIANT_KICK,
+                    f"charge done at {elapsed:.1f}s, releasing",
                     current_time,
                 )
 
+            wait_elapsed = current_time - self._radiant_released_at
+            wait_required = self.wave1_cfg.damage_register_wait_ms / 1000.0
+            if wait_elapsed < wait_required:
+                return self._emit_action_once(
+                    Wave1State.CAST_CHARGED_RADIANT_KICK,
+                    Wave1ActionName.WAIT,
+                    f"waiting_damage_register: {wait_elapsed:.1f}s/{wait_required:.1f}s",
+                    current_time,
+                )
+
+            self._radiant_released_at = None
             self._transition_to(Wave1State.VERIFY_COUNTER, current_time)
             self._prev_progress = progress
             self._stability.reset()
             return self._emit_action_once(
                 Wave1State.VERIFY_COUNTER,
-                Wave1ActionName.RELEASE_RADIANT_KICK,
-                f"released kick, damage registered at {elapsed:.1f}s",
+                Wave1ActionName.READ_PROGRESS,
+                f"damage registered at {elapsed:.1f}s total, verifying counter",
                 current_time,
             )
 
@@ -423,6 +435,7 @@ class Wave1HSM:
         if state == Wave1State.CONFIRM_STAGE_TRANSITION:
             ok, reason = guard_stage_transitioned(
                 self._prev_stage, self._prev_objective, progress,
+                expected_next_stage=self.wave1_cfg.next_stage_name,
                 timeout_sec=5.0,
                 state_entered_at=self._state_entered_at,
                 current_time=current_time,
@@ -472,18 +485,20 @@ class Wave1HSM:
         reason: str,
         current_time: float,
     ) -> Wave1Action:
-        """Emit action only once per state entry. WAIT on subsequent calls without adding to history."""
-        state_key = state.value
+        """Emit action only once per state visit. WAIT on subsequent calls without adding to history."""
+        state_key = f"{state.value}@{self._state_entry_id}"
         if state_key not in self._action_emitted:
             self._action_emitted.add(state_key)
             return self._action(name, reason, current_time)
         return Wave1Action(name=Wave1ActionName.WAIT, reason="action_queued")
 
     def _transition_to(self, new_state: Wave1State, current_time: float) -> None:
-        """Record state transition. Does NOT reset one-shot flags — caller must call _emit_action_once."""
+        """Record state transition. Increments entry ID so one-shot fires on re-entry."""
         self._prev_state = self.state
         self.state = new_state
         self._state_entered_at = current_time
+        self._state_entry_id += 1
+        self._radiant_released_at = None
 
     def _action(
         self, name: Wave1ActionName, reason: str, current_time: float
@@ -513,13 +528,14 @@ class Wave1HSM:
         self._stability.reset()
         self._action_emitted = set()
         self._compass_forced = False
+        self._radiant_released_at = None
+        self._state_entry_id = 0
 
     @property
     def stats(self) -> dict:
         return {
             "state": self.state.value,
             "prev_state": self._prev_state.value if self._prev_state else None,
-            "geppo_count": self._geppo_count,
             "radiant_kick_casts": self._radiant_kick_casts,
             "observation_scans": self._observation_scans,
             "cleanup_cycles": self._cleanup_cycles,

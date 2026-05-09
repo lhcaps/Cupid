@@ -148,32 +148,38 @@ class TestWave1HSM:
         assert Wave1State.AGGRO_WITH_GEPPO not in reached_states
 
     def test_damage_register_wait_prevents_immediate_verify(self):
-        """HSM must wait damage_register_wait_ms before VERIFY_COUNTER after release."""
+        """HSM must wait damage_register_wait_ms AFTER release before VERIFY_COUNTER."""
         hsm = Wave1HSM()
         cfg = hsm.wave1_cfg
 
         hsm._transition_to(Wave1State.CAST_CHARGED_RADIANT_KICK, 0.0)
-        hsm._state_entered_at = 0.0
 
         assert cfg.radiant_kick_charge_ms < cfg.damage_register_wait_ms
 
-        action = hsm.tick(
+        action_at_charge_end = hsm.tick(
             game_state=None,
             progress=make_progress(current=4, total=4, confidence=0.9),
             compass=make_compass(),
             current_time=2.0,
         )
+        assert action_at_charge_end.name == Wave1ActionName.RELEASE_RADIANT_KICK
+        assert hsm._radiant_released_at == 2.0
 
-        assert hsm.state == Wave1State.CAST_CHARGED_RADIANT_KICK
-        assert action.name == Wave1ActionName.WAIT
-
-        action2 = hsm.tick(
+        action_during_wait = hsm.tick(
             game_state=None,
             progress=make_progress(current=4, total=4, confidence=0.9),
             compass=make_compass(),
-            current_time=3.9,
+            current_time=2.5,
         )
+        assert action_during_wait.name == Wave1ActionName.WAIT
+        assert hsm.state == Wave1State.CAST_CHARGED_RADIANT_KICK
 
+        action_after_wait = hsm.tick(
+            game_state=None,
+            progress=make_progress(current=4, total=4, confidence=0.9),
+            compass=make_compass(),
+            current_time=4.5,
+        )
         wait_ms = cfg.damage_register_wait_ms
         assert wait_ms >= 2000, f"damage_register_wait_ms should be ~2200ms, got {wait_ms}ms"
         assert hsm.state == Wave1State.VERIFY_COUNTER
@@ -213,42 +219,45 @@ class TestWave1HSM:
         assert Wave1State.ALIGN_TO_EXIT.is_terminal is False
 
     def test_action_is_one_shot(self):
-        """An action should only be emitted once per state entry; subsequent ticks return WAIT."""
+        """An action should only be emitted once per state visit; re-entry can emit again."""
         hsm = Wave1HSM()
         tick = make_ticker()
 
         hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
         assert hsm.state == Wave1State.WAIT_PLAYER_CONTROL
-        assert "WAIT_PLAYER_CONTROL" in hsm._action_emitted
+        assert "WAIT_PLAYER_CONTROL@1" in hsm._action_emitted
 
-        hsm._transition_to(Wave1State.CAST_CHARGED_RADIANT_KICK, tick())
-        assert hsm.state == Wave1State.CAST_CHARGED_RADIANT_KICK
+        hsm._transition_to(Wave1State.CLEANUP_IF_NEEDED, tick())
+        assert hsm.state == Wave1State.CLEANUP_IF_NEEDED
 
-        t_charge = tick()
-        hsm._emit_action_once(
-            Wave1State.CAST_CHARGED_RADIANT_KICK,
-            Wave1ActionName.HOLD_RADIANT_KICK,
-            "charging",
-            t_charge,
+        a1 = hsm._emit_action_once(
+            Wave1State.CLEANUP_IF_NEEDED,
+            Wave1ActionName.CLEANUP_TARGET,
+            "cleanup 1",
+            tick(),
         )
-        assert "CAST_CHARGED_RADIANT_KICK" in hsm._action_emitted
+        assert a1.name == Wave1ActionName.CLEANUP_TARGET
+        assert "CLEANUP_IF_NEEDED@2" in hsm._action_emitted
 
-        emitted_actions = []
-        for i in range(5):
-            t_val = tick()
-            a = hsm.tick(
-                game_state=None,
-                progress=make_progress(current=0, confidence=0.9),
-                compass=make_compass(),
-                current_time=t_val,
-            )
-            emitted_actions.append((i, t_val, a.name.value))
+        a2 = hsm._emit_action_once(
+            Wave1State.CLEANUP_IF_NEEDED,
+            Wave1ActionName.CLEANUP_TARGET,
+            "cleanup 2",
+            tick(),
+        )
+        assert a2.name == Wave1ActionName.WAIT, \
+            "Second emit in same state visit should return WAIT"
 
-        assert emitted_actions[0][2] == "WAIT", f"First tick in CAST_CHARGED_RADIANT_KICK should WAIT (one-shot), got: {emitted_actions[0]}"
-        wait_count = sum(1 for _, _, n in emitted_actions if n == "WAIT")
-        assert wait_count == 3, f"Expected 3 WAIT ticks, got {wait_count}: {emitted_actions}"
-        assert emitted_actions[3][2] == "RELEASE_RADIANT_KICK"
-        assert emitted_actions[4][2] == "OBSERVATION_SCAN"
+        hsm._transition_to(Wave1State.CLEANUP_IF_NEEDED, tick())
+
+        a3 = hsm._emit_action_once(
+            Wave1State.CLEANUP_IF_NEEDED,
+            Wave1ActionName.CLEANUP_TARGET,
+            "cleanup after re-entry",
+            tick(),
+        )
+        assert a3.name == Wave1ActionName.CLEANUP_TARGET, \
+            "Re-entering state should emit action again"
 
     def test_stable_4_4_required_for_exit(self):
         """Single 4/4 frame followed by unclear must NOT produce can_exit."""
@@ -274,3 +283,133 @@ class TestWave1HSM:
         )
 
         assert hsm.state == Wave1State.VERIFY_COUNTER
+
+    def test_reenter_cleanup_can_emit_again(self):
+        """Re-entering CLEANUP_IF_NEEDED must emit CLEANUP_TARGET again."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.CLEANUP_IF_NEEDED, tick())
+
+        a1 = hsm._emit_action_once(
+            Wave1State.CLEANUP_IF_NEEDED, Wave1ActionName.CLEANUP_TARGET,
+            "cleanup 1", tick(),
+        )
+        assert a1.name == Wave1ActionName.CLEANUP_TARGET
+
+        a2 = hsm._emit_action_once(
+            Wave1State.CLEANUP_IF_NEEDED, Wave1ActionName.CLEANUP_TARGET,
+            "cleanup 2", tick(),
+        )
+        assert a2.name == Wave1ActionName.WAIT
+
+        hsm._transition_to(Wave1State.CLEANUP_IF_NEEDED, tick())
+
+        a3 = hsm._emit_action_once(
+            Wave1State.CLEANUP_IF_NEEDED, Wave1ActionName.CLEANUP_TARGET,
+            "cleanup after re-entry", tick(),
+        )
+        assert a3.name == Wave1ActionName.CLEANUP_TARGET, \
+            "Re-entering CLEANUP_IF_NEEDED should emit action again"
+
+    def test_geppo_does_not_advance_per_tick_without_elapsed(self):
+        """Rapid ticks without elapsed time must NOT advance from AGGRO_WITH_GEPPO."""
+        hsm = Wave1HSM()
+        cfg = hsm.wave1_cfg
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.AGGRO_WITH_GEPPO, tick())
+        entry_time = tick()
+
+        for i in range(10):
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(current=0, confidence=0.9),
+                compass=make_compass(),
+                current_time=entry_time + 0.1,
+            )
+
+        assert hsm.state == Wave1State.AGGRO_WITH_GEPPO, \
+            f"Rapid ticks should not advance geppo state; got {hsm.state}"
+        assert hsm._radiant_kick_casts == 0, \
+            "No radiant kick should be cast without aggro_wait elapsed"
+
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=0, confidence=0.9),
+            compass=make_compass(),
+            current_time=entry_time + cfg.aggro_wait_ms / 1000.0 + 0.1,
+        )
+        assert hsm.state == Wave1State.CAST_CHARGED_RADIANT_KICK
+
+    def test_done_requires_forsaken_garden_transition(self):
+        """DONE must require transition to The Forsaken Garden, not any stage change."""
+        hsm = Wave1HSM()
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.CONFIRM_STAGE_TRANSITION, tick())
+        hsm._prev_stage = "Shattered Ramparts"
+
+        for _ in range(9):
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(
+                    current=4, total=4, confidence=0.9,
+                    stage_name="The Crimson Keep",
+                ),
+                compass=make_compass(),
+                current_time=tick(),
+            )
+
+        assert hsm.state == Wave1State.CONFIRM_STAGE_TRANSITION, \
+            f"Wrong stage should not trigger DONE; got {hsm.state}"
+
+        for _ in range(9):
+            hsm.tick(
+                game_state=None,
+                progress=make_progress(
+                    current=4, total=4, confidence=0.9,
+                    stage_name="The Forsaken Garden",
+                ),
+                compass=make_compass(),
+                current_time=tick(),
+            )
+
+        assert hsm.state == Wave1State.DONE
+
+    def test_guard_complete_rejects_greater_than_total(self):
+        """guard_objective_complete must reject objective_current > objective_total."""
+        from vcl_hsm.transitions import guard_objective_complete
+        from vcl_core.schemas import ProgressState
+
+        p_overflow = ProgressState(
+            stage_name="Shattered Ramparts",
+            objective_current=5,
+            objective_total=4,
+            confidence=0.9,
+        )
+        ok, reason = guard_objective_complete(p_overflow, min_confidence=0.65)
+        assert not ok, f"Should reject overflow: {reason}"
+        assert "overflow" in reason.lower()
+
+        p_normal = ProgressState(
+            stage_name="Shattered Ramparts",
+            objective_current=4,
+            objective_total=4,
+            confidence=0.9,
+        )
+        ok2, _ = guard_objective_complete(p_normal, min_confidence=0.65)
+        assert ok2
+
+        p_none_total = ProgressState(
+            stage_name="Shattered Ramparts",
+            objective_current=4,
+            objective_total=None,
+            confidence=0.9,
+        )
+        ok3, reason3 = guard_objective_complete(p_none_total, min_confidence=0.65)
+        assert not ok3
+        assert "objective_total_not_set" in reason3

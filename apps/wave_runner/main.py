@@ -103,20 +103,34 @@ def simulate(
         for a in actions:
             f.write(json.dumps(a) + "\n")
 
+    if hsm.state == Wave1State.DONE:
+        run_status_sim = "clear"
+    else:
+        run_status_sim = "fail"
+
+    final_progress = hsm._prev_progress
+    objective_final = (
+        f"{final_progress.objective_current or '?'}/{final_progress.objective_total or '?'}"
+        if final_progress else "?"
+    )
+
     summary = RunSummary(
         run_id=logger.run_id,
-        status="clear",
+        status=run_status_sim,
         duration_sec=timeline_data[-1].get("timestamp", 0) if timeline_data else 0,
-        objective_final="4/4",
+        objective_final=objective_final,
         radiant_kick_casts=hsm._radiant_kick_casts,
         observation_scans=hsm._observation_scans,
         cleanup_cycles=hsm._cleanup_cycles,
+        failure_reason=None if run_status_sim == "clear" else hsm.state.value,
     )
     logger.log_summary(summary)
 
     console.print(f"\n[green]HSM dry-run complete![/green]")
     console.print(f"  Actions: {len(actions)}")
     console.print(f"  Final state: {hsm.state.value}")
+    console.print(f"  Status: [{run_status_sim}] {run_status_sim.upper()}")
+    console.print(f"  Objective final: {objective_final}")
     console.print(f"  Output: {actions_path}")
 
 
@@ -201,6 +215,20 @@ def live(
                         compass_confidence=compass.confidence,
                     )
 
+                    RISKY_STATES = (
+                        Wave1State.VERIFY_STAGE_UI,
+                        Wave1State.AGGRO_WITH_GEPPO,
+                        Wave1State.CAST_CHARGED_RADIANT_KICK,
+                        Wave1State.VERIFY_COUNTER,
+                        Wave1State.ALIGN_TO_EXIT,
+                        Wave1State.MOVE_NEXT_STAGE,
+                    )
+                    if mode == "execute" and hsm.state in RISKY_STATES:
+                        if progress.confidence < cfg.progress_ui.min_confidence:
+                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} — pausing, releasing keys[/yellow]")
+                            executor.primitives.release_held_keys()
+                            continue
+
                     if mode == "execute":
                         executor.execute(action.name)
 
@@ -211,20 +239,6 @@ def live(
                     if hsm.state == Wave1State.FAILSAFE:
                         run_status = "fail"
                         break
-
-                    low_confidence_states = (
-                        Wave1State.VERIFY_STAGE_UI,
-                        Wave1State.AGGRO_WITH_GEPPO,
-                        Wave1State.CAST_CHARGED_RADIANT_KICK,
-                        Wave1State.VERIFY_COUNTER,
-                        Wave1State.ALIGN_TO_EXIT,
-                        Wave1State.MOVE_NEXT_STAGE,
-                    )
-                    if mode == "execute" and hsm.state in low_confidence_states:
-                        if progress.confidence < cfg.progress_ui.min_confidence:
-                            console.print(f"  [yellow]!! Low confidence {progress.confidence:.2f} — pausing, releasing keys[/yellow]")
-                            executor.primitives.release_all_keys()
-                            continue
 
         except KeyboardInterrupt:
             run_status = "stopped"

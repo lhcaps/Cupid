@@ -87,9 +87,12 @@ def guard_geppo_done(
     state_entered_at: float,
     current_time: float,
 ) -> tuple[bool, str]:
-    """GUARD for AGGRO_WITH_GEPPO -> CAST_CHARGED_RADIANT_KICK."""
-    if geppo_count < config.geppo_count:
-        return False, f"geppo_incomplete: {geppo_count}/{config.geppo_count}"
+    """GUARD for AGGRO_WITH_GEPPO -> CAST_CHARGED_RADIANT_KICK.
+
+    Geppo is considered done when:
+    - Configured geppo count has been executed (caller is responsible for execution timing)
+    - Aggro wait period has elapsed since entering AGGRO_WITH_GEPPO state
+    """
     elapsed = current_time - state_entered_at
     if elapsed < config.aggro_wait_ms / 1000.0:
         return False, f"aggro_wait: {elapsed:.1f}s < {config.aggro_wait_ms}ms"
@@ -118,6 +121,10 @@ def guard_objective_complete(
         return False, "no_progress_data"
     if progress.objective_current is None:
         return False, "counter_not_read"
+    if progress.objective_total is None:
+        return False, "objective_total_not_set"
+    if progress.objective_current > progress.objective_total:
+        return False, f"overflow: {progress.objective_current}/{progress.objective_total}"
     if progress.objective_current < progress.objective_total:
         return False, f"incomplete: {progress.objective_current}/{progress.objective_total}"
     if progress.confidence < min_confidence:
@@ -174,29 +181,22 @@ def guard_stage_transitioned(
     prev_stage: str | None,
     prev_objective: int | None,
     progress: ProgressState | None,
+    expected_next_stage: str = "The Forsaken Garden",
     timeout_sec: float = 5.0,
     state_entered_at: float = 0.0,
     current_time: float = 0.0,
 ) -> tuple[bool, str]:
-    """GUARD for CONFIRM_STAGE_TRANSITION -> DONE."""
+    """GUARD for CONFIRM_STAGE_TRANSITION -> DONE. Requires explicit expected next stage."""
     if current_time - state_entered_at > timeout_sec:
         return False, "transition_timeout"
 
     if progress is None:
         return False, "no_progress_data_after_transition"
 
-    stage_changed = (
-        prev_stage is not None
-        and progress.stage_name is not None
-        and progress.stage_name != prev_stage
-    )
-    objective_reset = (
-        prev_objective is not None
-        and progress.objective_current is not None
-        and progress.objective_current < prev_objective
-    )
+    expected_lower = expected_next_stage.lower().replace("'", "").replace(" ", "")
+    current_lower = (progress.stage_name or "").lower().replace("'", "").replace(" ", "")
 
-    if stage_changed or objective_reset:
-        return True, "transition_confirmed"
+    if current_lower == expected_lower:
+        return True, f"transition_confirmed: {progress.stage_name}"
 
-    return False, f"waiting_transition: stage={progress.stage_name}, obj={progress.objective_current}"
+    return False, f"waiting_transition: stage={progress.stage_name}, expected={expected_next_stage}"

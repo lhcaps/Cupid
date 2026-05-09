@@ -76,8 +76,9 @@ class InputPrimitives:
         self._release_fn(key)
         self._held_keys.discard(key)
 
-    def release_all_keys(self) -> None:
-        """Release all currently held keys. Called on emergency stop."""
+    def release_held_keys(self) -> None:
+        """Release all currently held movement/skill keys. Does NOT set _stopped=True.
+        Used for temporary pauses (e.g. low-confidence) where execution may resume."""
         ALL_KEYS = [
             self.keybinds.forward, self.keybinds.backward,
             self.keybinds.jump, self.keybinds.radiant_kick,
@@ -88,6 +89,10 @@ class InputPrimitives:
         for key in ALL_KEYS:
             self._release_fn(key)
         self._held_keys.clear()
+
+    def release_all_keys(self) -> None:
+        """Release all currently held keys and hard-stop. Called on emergency stop."""
+        self.release_held_keys()
         self._stopped = True
 
     def resume(self) -> None:

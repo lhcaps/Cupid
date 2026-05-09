@@ -324,17 +324,40 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 
 **Verification:**
 - `python tools/validate_install.py` → PASS
-- `pytest tests/` → 37 passed
+- `pytest tests/` → 46 passed (P0.5: added 9 new tests)
 - `python -m apps.replay_analyzer.main --help` → PASS
 - `python -m apps.wave_runner.main --help` → PASS
-- Replay smoke on `MedalTVRoblox20260509053121278-trim-1778279513526.mp4` → PASS (159 frames sampled, conf 0.30-0.83)
-- HSM dry-run on timeline → PASS (159 actions, final state FAILSAFE due to low confidence in video)
+- Replay smoke on `MedalTVRoblox20260509053121278-trim-1778279513526.mp4` → PASS (159 frames sampled, conf 0.79-0.83)
+- HSM dry-run on timeline → PASS (159 actions, final state FAILSAFE, correctly reported as "fail" with objective_final=3/4)
 
 **Known remaining risks:**
 - Counter detection confidence is low (0.30) on recorded video frames — likely needs frame timing/region tuning on live runs
 - HSM final state was FAILSAFE on dry-run (expected: video counter reads never met 0.75 confidence threshold)
 - Compass heading readings were unreliable (I/W/E fluctuating) — compass is treated as helper, not hard blocker
 - No live execute testing yet — readiness for 10-run verification depends on first live results
+
+### Phase P0.5 — Remaining Runtime Blockers Fix
+
+**Dependency:** Phase P0
+**Status:** COMPLETED (2026-05-09)
+**Goal:** Fix remaining runtime bugs found in static review of Phase P0.
+
+**Tasks completed:**
+1. Low-confidence execute gate now runs BEFORE `executor.execute()` — no action fires on low conf
+2. `release_held_keys()` (no `_stopped=True`) vs `release_all_keys()` (hard stop) split
+3. 0/4 counter returns confidence 0.70 (fixed from 0.0); noise clamped to `objective_total`
+4. `guard_objective_complete` rejects `current > total` and `total is None`
+5. Real post-release damage wait: `RELEASE_RADIANT_KICK` emitted at charge end, then `WAIT` for `damage_register_wait_ms` before VERIFY_COUNTER
+6. One-shot per state entry using `{state.value}@{state_entry_id}` — re-entry can emit again
+7. Geppo count driven by elapsed time, not tick count — rapid ticks don't advance geppo
+8. Simulate summary truthful: `status="clear"` only if `DONE`, `objective_final` from last progress read
+9. DONE requires explicit `The Forsaken Garden` stage (config `wave1.next_stage_name`)
+
+**New tests:** 9 added (46 total, all passing)
+
+**Files changed:** `wave1_machine.py`, `transitions.py`, `stability.py`, `primitives.py`, `executor.py`, `wave_runner/main.py`, `config.py`, `progress_detector.py`, `wave1.shattered_ramparts.yaml`, `app.default.yaml`, `test_wave1_hsm.py`, `test_progress_detector.py`, `test_input_safety.py`
+
+**Verification:** validate_install PASS, pytest 46/46 PASS, replay smoke PASS, HSM dry-run reports correct fail status
 
 **Next steps:**
 - Run assist mode first to validate low-confidence behavior on real gameplay

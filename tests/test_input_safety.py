@@ -118,3 +118,28 @@ class TestInputSafety:
         assert "space" in keys_released
         assert "r" in keys_released
         assert len(primitives.held_keys) == 0
+
+    def test_release_held_keys_does_not_set_stopped(self):
+        """release_held_keys must NOT set _stopped=True (only release_all_keys does)."""
+        p = InputPrimitives()
+        p.hold("w")
+        p.hold("space")
+        assert not p._stopped
+
+        p.release_held_keys()
+        assert len(p.held_keys) == 0
+        assert not p._stopped, "release_held_keys must not set _stopped=True"
+
+    def test_release_all_keys_sets_stopped(self):
+        """release_all_keys must set _stopped=True."""
+        p = InputPrimitives()
+        p.hold("r")
+        p.release_all_keys()
+        assert p._stopped
+
+    def test_release_held_keys_allows_resume(self):
+        """After release_held_keys, primitives can still hold keys (no hard stop)."""
+        p = InputPrimitives()
+        p.release_held_keys()
+        p.hold("w")
+        assert "w" in p.held_keys
