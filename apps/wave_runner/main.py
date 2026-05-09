@@ -243,7 +243,8 @@ def live(
 
                     console.print(
                         f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
-                        f"action={action.name.value} obj={progress_str}"
+                        f"action={action.name.value} obj={progress_str} "
+                        f"pconf={progress.confidence:.2f} cc={compass.confidence:.2f}"
                     )
 
                     logger.log(
