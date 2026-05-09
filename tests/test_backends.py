@@ -190,16 +190,26 @@ class TestInputBackend:
         assert prim_fn.backend_name == "custom_fn"
 
     def test_input_primitives_respects_input_config_backend(self):
-        """InputPrimitives should create the correct backend from InputConfig."""
+        """InputPrimitives should report the configured backend name from input_config.backend."""
         from vcl_input.primitives import InputPrimitives
         from vcl_core.config import InputConfig
-        from vcl_input.backends import create_input_backend
 
-        # When no backend injected, InputPrimitives creates one from input_config
+        # When no backend injected and no press_fn, backend_name reflects input_config.backend.
         cfg = InputConfig(backend="pynput")
         prim = InputPrimitives(input_config=cfg)
-        # Backend should be created lazily on first use, verify the config is stored
-        assert prim._input_config.backend == "pynput"
+        assert prim.backend_name == "pynput", (
+            f"Expected 'pynput'. Got {prim.backend_name}."
+        )
+
+        # Different backend in config should reflect that.
+        cfg_di = InputConfig(backend="pydirectinput")
+        prim_di = InputPrimitives(input_config=cfg_di)
+        assert prim_di.backend_name == "pydirectinput", (
+            f"InputPrimitives(input_config=InputConfig(backend='pydirectinput')) "
+            f"should report 'pydirectinput'. Got {prim_di.backend_name}. "
+            "This was the P0.11 fix: backend_name must respect input_config.backend "
+            "even without explicit backend injection."
+        )
 
     def test_input_primitives_uses_injected_backend_press_release(self):
         """InputPrimitives must use injected backend's press/release, not create a new one."""

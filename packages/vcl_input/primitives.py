@@ -35,6 +35,20 @@ class InputPrimitives:
         self._held_keys: set[str] = set()
         self._stopped = False
         self._backend = backend
+        # Track explicit backend name so backend_name property can return it
+        # without creating the backend eagerly (preserves test overrides of _default_*).
+        # Pre-populate from input_config so that
+        # InputPrimitives(input_config=InputConfig(backend="pydirectinput"))
+        # correctly reports backend_name="pydirectinput" before any input is called.
+        # This name will be refined when _default_press creates the real backend.
+        self._explicit_backend_name: str | None = None
+        if self._backend is not None:
+            self._explicit_backend_name = self._backend.name
+        elif press_fn is None:
+            # No backend and no press_fn: backend_name will derive from input_config.backend
+            # once _default_press creates the real backend. Set the preliminary name here
+            # so backend_name property returns the correct value immediately.
+            self._explicit_backend_name = self._input_config.backend
 
         if press_fn is not None:
             self._press_fn = press_fn
@@ -47,9 +61,10 @@ class InputPrimitives:
             self._release_fn = self._default_release
 
     def _default_press(self, key: str) -> None:
-        from vcl_input.backends import PynputInputBackend
         if self._backend is None:
-            self._backend = PynputInputBackend()
+            from vcl_input.backends import create_input_backend
+            self._backend = create_input_backend(self._input_config)
+            self._explicit_backend_name = self._backend.name
         try:
             self._backend.press(key)
         except Exception as exc:
@@ -58,9 +73,10 @@ class InputPrimitives:
             logger.warning("[INPUT] press(%r) failed silently: %s", key, exc)
 
     def _default_release(self, key: str) -> None:
-        from vcl_input.backends import PynputInputBackend
         if self._backend is None:
-            self._backend = PynputInputBackend()
+            from vcl_input.backends import create_input_backend
+            self._backend = create_input_backend(self._input_config)
+            self._explicit_backend_name = self._backend.name
         try:
             self._backend.release(key)
         except Exception as exc:
@@ -215,10 +231,19 @@ class InputPrimitives:
     @property
     def backend_name(self) -> str:
         """Return the name of the active input backend."""
-        if self._backend is not None:
-            return self._backend.name
-        if self._press_fn is not None and self._press_fn not in (self._default_press, self._default_release):
-            return "custom_fn"
+        if self._explicit_backend_name is not None:
+            return self._explicit_backend_name
+        if self._press_fn is not None:
+            # Check if press_fn is a bound method of self (default path)
+            try:
+                is_bound_of_self = (
+                    hasattr(self._press_fn, '__self__')
+                    and self._press_fn.__self__ is self
+                )
+            except (TypeError, AttributeError):
+                is_bound_of_self = False
+            if not is_bound_of_self:
+                return "custom_fn"
         return "pynput"
 
     @property

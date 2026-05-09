@@ -552,12 +552,60 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 - Live game verification still pending — unit tests pass, real execution untested
 - Counter crop regions may need tuning on live runs
 - DXcam + pydirectinput real-world behavior unverified
+- **Resolved in P0.11:** `_count_circles()` early return made 0/4 unreachable; confidence capped at 0.72
+- **Resolved in P0.11:** `InputPrimitives` didn't respect `input_config.backend` by default
 
 **Next steps:**
 1. `pip install ".[runtime]"` — install all runtime backends
 2. `python -m apps.wave_runner.main live --mode assist --capture-backend dxcam --debug-vision` — diagnose counter reads with DXcam
 3. `python -m apps.wave_runner.main keyboard-test --input-backend pydirectinput` — verify Roblox key receipt
 4. `python -m apps.wave_runner.main live --mode execute --input-backend pydirectinput --capture-backend dxcam --debug-input --debug-vision` — first real execute run
+
+### Phase P0.11 — Empty Slot Detection Correctness
+
+**Dependency:** Phase P0.10
+**Status:** COMPLETED
+
+**Goal:** Make the 0/4 empty-slot detection path reachable and trustworthy at wave start, without reintroducing the old false-high-confidence bug.
+
+**Tasks completed:**
+1. **_count_circles ordering fix** — `_count_empty_slots(gray, cw, ch)` is now called BEFORE the no-filled-candidates early return. Refactored `_count_empty_slots` to accept pre-computed grayscale crop + dimensions to avoid redundant work. If no filled candidates but `slot_count > 0`, returns `(0, slot_conf, 0, slot_count)` — a valid 0/4 read. Only returns `(None, 0.0, 0, 0)` when neither filled circles nor empty slots are found.
+2. **5-tuple return** — `_count_circles` now returns 5-tuple `(count, conf, candidate_count, slot_count, slot_conf)` so `detect_with_debug` has access to the actual `slot_conf` from circularity detection.
+3. **0/4 confidence formula fix** — Changed from hardcoded cap to `raw_conf = panel_conf * 0.25 + slot_conf * 0.75`. This lets genuine 4-slot geometry produce a confidence that passes the `min_confidence=0.75` gate.
+4. **OpenCV guard** — Added `gray.size == 0` and `gray.ndim != 2` guard in `_count_empty_slots` to prevent access violations on empty synthetic frames.
+5. **InputPrimitives backend config fix** — `_explicit_backend_name` is now pre-populated from `input_config.backend` in `__init__` when no explicit backend or `press_fn` is injected. This ensures `backend_name` returns the configured backend name (e.g., `"pydirectinput"`) immediately, not just after input is called.
+6. **Synthetic ring tests** — Added `_make_unfilled_rings_crop()` helper that draws actual ring outlines (bright perimeter, dark interior) to test empty slot detection. Added tests for: slot_count > 0 on visible rings, circle_count == 0 on empty rings, mixed filled + empty slots, and blank-crop low-confidence guarantees.
+
+**Files changed:**
+- `packages/vcl_vision/progress_detector.py` — `_count_circles` 5-tuple, `_count_empty_slots` accepts grayscale crop + dims, 0/4 confidence formula uses `slot_conf`, OpenCV guard added
+- `packages/vcl_input/primitives.py` — `_explicit_backend_name` pre-populated from `input_config.backend` in `__init__`, `backend_name` property uses it
+- `tests/test_progress_detector.py` — `_make_unfilled_rings_crop` helper, 4 new tests for empty slot detection
+- `tests/test_backends.py` — Updated `test_input_primitives_respects_input_config_backend` to verify `backend_name == "pydirectinput"` when configured
+
+**Key design decisions:**
+- `_count_empty_slots` called BEFORE filled-candidates check — this is the core fix; order matters
+- 0/4 confidence derived from actual `slot_conf` (circularity-based) instead of hardcoded 0.6 cap
+- No eager backend creation in `InputPrimitives.__init__` — preserves safety test overrides of `_default_*`
+- Ring outline brightness in synthetic tests must be below the filled-circle threshold (80) to avoid misclassification
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `python -m pytest tests/test_progress_detector.py tests/test_backends.py tests/test_input_safety.py tests/test_calibrate_regions.py` → 67 passed
+- `python -m compileall apps packages tools` → PASS
+- `python -m apps.wave_runner.main --help` → PASS
+- `python -m apps.wave_runner.main live --help` → PASS
+- `python -m apps.wave_runner.main keyboard-test --help` → PASS
+- `python tools/collect_yolo_frames.py --help` → PASS
+
+**Known remaining risks:**
+- Real-world empty slot geometry may differ from synthetic ring outlines; live assist run needed to validate
+- `slot_conf` from Canny-edge detection depends on ring edge contrast — may need tuning for actual game screenshots
+
+**Next steps:**
+1. `pip install ".[runtime]"` — install all runtime backends
+2. `python -m apps.wave_runner.main live --mode assist --capture-backend dxcam --debug-vision` — expect `obj=0/4 pconf>=0.75` or debug JSON with `slots: 4, objective_current: 0`
+3. `python -m apps.wave_runner.main keyboard-test --input-backend pydirectinput` — verify Roblox key receipt
+4. `python -m apps.wave_runner.main live --mode execute --input-backend pydirectinput --capture-backend dxcam --debug-input --debug-vision` — first real execute
 
 ### Phase 8 — Wave 1 MVP Verification & Polish
 

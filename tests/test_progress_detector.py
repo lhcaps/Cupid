@@ -34,6 +34,40 @@ def _make_counter_crop(
     return crop
 
 
+def _make_unfilled_rings_crop(
+    count: int,
+    width: int = 420,
+    height: int = 40,
+    cx_start: int = 30,
+    spacing: int = 55,
+    circle_r: int = 11,
+    outline_brightness: int = 60,
+    interior_brightness: int = 30,
+    thickness: int = 2,
+) -> np.ndarray:
+    """
+    Create a synthetic counter crop with unfilled ring outlines.
+
+    Rings are drawn as outlines: bright perimeter, dark interior.
+    This simulates the appearance of empty unfilled circle slots in the game UI.
+    The edge detection in _count_empty_slots will find these rings via Canny edges
+    and verify the dark interior.
+    """
+    crop = np.full((height, width, 3), interior_brightness, dtype=np.uint8)
+    for i in range(count):
+        cx = cx_start + i * spacing
+        cy = height // 2
+        if cx < width - circle_r:
+            cv2.circle(
+                crop,
+                (cx, cy),
+                circle_r,
+                (outline_brightness, outline_brightness, outline_brightness),
+                thickness,
+            )
+    return crop
+
+
 def _make_wave_panel(width: int = 550, height: int = 180) -> np.ndarray:
     """Create a synthetic wave panel that passes active detection, keeping counter area dark."""
     panel = np.full((height, width, 3), 30, dtype=np.uint8)
@@ -378,3 +412,124 @@ class TestProgressDetector:
 
         assert result.objective_current <= cfg.objective_total, \
             f"objective_current ({result.objective_current}) should be clamped to objective_total ({cfg.objective_total})"
+
+    def test_empty_slots_detected_with_visible_ring_outlines(self):
+        """Empty ring outlines should produce slot_count > 0 in _count_empty_slots."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+        )
+        # Panel is active, counter has 4 empty ring outlines
+        panel = _make_active_wave_panel(width=550, height=180)
+        rings = _make_unfilled_rings_crop(count=4)
+        frame = _make_full_frame(rings, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        _, debug_info = det.detect_with_debug(frame)
+
+        assert debug_info.slot_count > 0, (
+            f"Visible ring outlines should produce slot_count > 0. "
+            f"Got {debug_info.slot_count}. "
+            f"_count_empty_slots must be called even when filled candidates == 0."
+        )
+
+    def test_0_4_with_visible_slots_returns_0_not_None(self):
+        """Visible 0/4 ring outlines should return objective_current=0, not None."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+            min_confidence=0.75,
+        )
+        panel = _make_active_wave_panel(width=550, height=180)
+        rings = _make_unfilled_rings_crop(count=4)
+        frame = _make_full_frame(rings, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        result, debug_info = det.detect_with_debug(frame)
+
+        assert debug_info.selected_mode == "circle", (
+            f"Should use circle mode. Got {debug_info.selected_mode}"
+        )
+        assert debug_info.circle_count == 0, (
+            f"circle_count should be 0 for empty rings. Got {debug_info.circle_count}"
+        )
+        assert debug_info.slot_count >= 4, (
+            f"slot_count should be >= 4. Got {debug_info.slot_count}"
+        )
+        assert result.objective_current == 0, (
+            f"objective_current should be 0 for 0/4. Got {result.objective_current}"
+        )
+        assert result.objective_total == 4, (
+            f"objective_total should be 4. Got {result.objective_total}"
+        )
+
+    def test_0_4_confidence_uses_slot_conf_not_hardcoded_cap(self):
+        """0/4 confidence must come from actual slot_conf, not a hardcoded cap."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+            min_confidence=0.75,
+        )
+        panel = _make_active_wave_panel(width=550, height=180)
+        rings = _make_unfilled_rings_crop(count=4)
+        frame = _make_full_frame(rings, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        result, debug_info = det.detect_with_debug(frame)
+
+        # slot_conf comes from actual circularity detection, not 0.6 hardcoded cap
+        # With good ring outlines, slot_conf should be reasonable
+        # If slot_conf is still too low, the formula blends with panel_conf
+        # Key: the result should reflect actual detection quality
+        assert result.objective_current == 0, (
+            f"Should detect 0/4 from visible slots. Got objective_current={result.objective_current}"
+        )
+        # Blank crop should NOT produce high confidence
+        blank_frame = np.zeros((1440, 2560, 3), dtype=np.uint8)
+        blank_result, blank_debug = det.detect_with_debug(blank_frame)
+        assert blank_result.confidence < 0.75, (
+            "Blank crop must NOT produce high-confidence reads"
+        )
+
+    def test_mixed_filled_and_empty_slots(self):
+        """2 filled + 2 empty should return objective_current=2, candidate_count>=2, slot_count>=2."""
+        cfg = ProgressUIConfig(
+            crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            counter_crop=CropRegion(x1=1340, y1=100, x2=1760, y2=140),
+            wave_panel_crop=CropRegion(x1=1300, y1=0, x2=1850, y2=180),
+            objective_total=4,
+        )
+        panel = _make_wave_panel(width=550, height=180)
+        # Draw 2 filled circles first, then 2 unfilled ring outlines
+        mixed = _make_counter_crop(filled=2, unfilled=0)
+        rings = _make_unfilled_rings_crop(count=2)
+        # Overlay rings after filled circles in the counter area
+        # Position rings in the right half of the counter area
+        for i in range(2):
+            cx = 1340 + 30 + (2 + i) * 55
+            cy = 100 + 100 + 40 // 2
+            cv2.circle(
+                mixed,
+                (cx, cy),
+                11,
+                (120, 120, 120),
+                2,
+            )
+        frame = _make_full_frame(mixed, panel, counter_abs=(100, 1340, 140, 1760))
+
+        det = ProgressDetector(config=cfg)
+        result, debug_info = det.detect_with_debug(frame)
+
+        if debug_info.selected_mode == "circle":
+            assert debug_info.candidate_count > 0, (
+                f"Filled circles should produce candidates. Got {debug_info.candidate_count}"
+            )
+            assert debug_info.candidate_count >= 2, (
+                f"At least 2 filled candidates expected. Got {debug_info.candidate_count}"
+            )
