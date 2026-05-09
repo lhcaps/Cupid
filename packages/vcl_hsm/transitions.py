@@ -67,6 +67,7 @@ def guard_stage_verified(
     expected_stage: str = "Shattered Ramparts",
     min_confidence: float = 0.75,
     initial_counter_max: int = 0,
+    allow_resume_mid_wave: bool = False,
 ) -> tuple[bool, str]:
     """GUARD for VERIFY_STAGE_UI -> AGGRO_WITH_GEPPO.
 
@@ -75,8 +76,11 @@ def guard_stage_verified(
         expected_stage: expected stage name
         min_confidence: minimum confidence for stage detection
         initial_counter_max: maximum acceptable objective_current for Wave 1 start.
-            Defaults to 0 (Wave 1 must start at 0/4). Set higher to allow
-            mid-wave resume. Pass None to disable this check.
+            Defaults to 0 (Wave 1 must start at 0/4). Counter values in range
+            1..objective_total-1 are "too high" and blocked unless allow_resume_mid_wave=True.
+        allow_resume_mid_wave: if True, non-zero intermediate counters (1..total-1) are
+            allowed through the guard with reason "mid_wave_resume_allowed". If False,
+            they are blocked with "initial_counter_too_high".
     """
     if progress is None:
         return False, "no_progress_data"
@@ -94,14 +98,14 @@ def guard_stage_verified(
     # Initial counter check: reject impossible intermediate counters at wave start.
     # - Counter 0: valid (wave not started)
     # - Counter == objective_total: valid (mid-wave resume)
-    # - Counter 1..objective_total-1: invalid at wave start (impossible — enemies can't
-    #   already be killed when the wave hasn't properly started)
-    # - Counter > objective_total: overflow, already handled by overflow check
+    # - Counter 1..objective_total-1: blocked unless allow_resume_mid_wave=True
     if (
         initial_counter_max is not None
         and progress.objective_current is not None
         and 1 <= progress.objective_current < (progress.objective_total or 4)
     ):
+        if allow_resume_mid_wave:
+            return True, f"mid_wave_resume_allowed: {progress.objective_current}/{progress.objective_total}"
         return False, f"initial_counter_too_high: {progress.objective_current}/{progress.objective_total}"
 
     return True, f"stage_verified: {progress.stage_name}"

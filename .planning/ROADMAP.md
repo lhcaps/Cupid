@@ -660,6 +660,59 @@ Wave 2 (t=22-25s): 631-696 green pixels → wave active
 2. Verify `VERIFY_STAGE_UI` now logs `initial_counter_too_high` reason when `obj=2/4` appears at wave start
 3. If persistent clear fires too early (blank crop), increase `persistent_required_total` to 10 or `persistent_required_strong` to 3
 
+### Phase P0.13 — Stage Verification Diagnostics and Counter Crop Calibration
+
+**Dependency:** Phase P0.12
+**Status:** COMPLETED
+
+**Goal:** Make the cause of VERIFY_STAGE_UI blocking observable; expose guard reason in console; add calibration tool for crop inspection.
+
+**Context:** Assist run with dxcam showed HSM stuck at VERIFY_STAGE_UI reading `obj=2/4 pconf=1.00` until FAILSAFE. P0.12's stage start guard correctly blocked intermediate counters 1..3. The real question was: is `2/4` a false positive (wrong crop) or real (mid-wave resume)? Without visible reason in console output, it was impossible to diagnose.
+
+**Tasks completed:**
+1. **Action reason in live output** — Console now shows `reason="verifying_stage_ui: initial_counter_too_high: 2/4"` in both `--debug-vision` mode and `assist` mode. This tells the user exactly why the guard rejected the current counter.
+2. **Debug JSON enrichment** — Every saved debug JSON now includes `hsm_state`, `action_name`, `action_reason`, `slot_conf`, `raw_confidence`, `accepted_confidence`, `circle_count`, `circle_conf`, `text_count`, `text_conf`, `panel_active`, `panel_conf` — the full detector picture per frame.
+3. **Visual overlay** — `VisionDebug.save_overlay()` draws labeled rectangles (progress_crop, counter_crop, wave_panel) on the full frame and saves `overlay_<ts>.png`. Lets users visually confirm crop alignment without guessing.
+4. **calibrate-progress CLI command** — Captures N frames, runs detector, saves all crops + overlay + JSON, and prints a Rich summary table to console. Safe: no HSM, no input. Use `--frames` to control capture count.
+5. **allow_resume_mid_wave config** — Added to `Wave1Config`. When `true`, intermediate counters 1..3 pass VERIFY_STAGE_UI guard with reason `mid_wave_resume_allowed`. Default `false` (safety: only 0/4 fresh start or 4/4 complete).
+6. **Config docs** — `wave1.shattered_ramparts.yaml` documents all stability and stage guard params.
+
+**Files changed:**
+- `apps/wave_runner/main.py` — `calibrate-progress` command (~130 lines), console reason in assist/debug mode, debug JSON with hsm_state/action_reason
+- `packages/vcl_vision/vision_debug.py` — `save_overlay()` method for labeled crop rectangles
+- `packages/vcl_vision/progress_detector.py` — `slot_conf` added to `ProgressDebugInfo`
+- `packages/vcl_hsm/transitions.py` — `guard_stage_verified` gets `allow_resume_mid_wave` param
+- `packages/vcl_core/config.py` — `allow_resume_mid_wave` added to `Wave1Config`
+- `packages/vcl_hsm/wave1_machine.py` — `guard_stage_verified` called with `allow_resume_mid_wave`
+- `configs/wave1.shattered_ramparts.yaml` — all wave1 params documented
+- `tests/test_wave1_hsm.py` — 3 new tests for resume-mid-wave behavior
+- `tests/test_live_confidence_gate.py` — `slot_conf` added to mock
+
+**Key design decisions:**
+- `calibrate-progress` is a first-class CLI command alongside `live`, not a separate script — keeps tooling discoverable
+- Overlay saves every cadence-gated frame (not just state transitions) for thorough crop inspection
+- `allow_resume_mid_wave=false` is the safe default; users must explicitly opt-in for mid-wave resume
+- `slot_conf` is stored in `ProgressDebugInfo` so the debug JSON shows the actual slot ring confidence
+
+**Verification:**
+- `python tools/validate_install.py` → PASS
+- `python -m pytest tests/test_progress_detector.py tests/test_wave1_hsm.py tests/test_backends.py tests/test_input_safety.py tests/test_calibrate_regions.py` → 107 passed
+- `python -m compileall apps packages tools` → PASS
+- `python -m apps.wave_runner.main --help` → PASS
+- `python -m apps.wave_runner.main live --help` → PASS
+- `python -m apps.wave_runner.main calibrate-progress --help` → PASS
+
+**Known remaining risks:**
+- If crop calibration still shows 2/4 with correct crop position, the detector is misreading the UI and the crop coordinates need adjustment in `progress_ui.counter_crop`
+- `slot_conf` from Canny-edge detection may still produce false slots on UI noise
+
+**Next steps:**
+1. `python -m apps.wave_runner.main calibrate-progress --capture-backend dxcam --frames 5` — inspect overlay images and counter_crop
+2. Open `reports/vision_debug/calibration_<timestamp>/overlay_*.png` — confirm green/blue rectangles cover the actual wave objective counter UI
+3. If overlay is wrong: adjust `progress_ui.counter_crop` in `configs/wave1.shattered_ramparts.yaml`
+4. If overlay is correct but obj=2/4 is wrong: detector is misreading; revisit circle/text detection thresholds
+5. If overlay is correct and obj=2/4 is real: reset dungeon or set `allow_resume_mid_wave: true` to test mid-wave resume
+
 ### Phase 8 — Wave 1 MVP Verification & Polish
 
 **Dependency:** Phase P0.8

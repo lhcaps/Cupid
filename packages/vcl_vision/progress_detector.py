@@ -21,6 +21,7 @@ class ProgressDebugInfo:
     panel_conf: float
     candidate_count: int
     slot_count: int        # empty ring/slot candidates (for 0/4 detection)
+    slot_conf: float      # confidence of slot ring detection (circularity-based)
     raw_confidence: float   # computed confidence before min-confidence gate
     accepted_confidence: float = 0.0  # confidence that passed min-confidence gate (0.0 if rejected)
 
@@ -68,6 +69,7 @@ class ProgressDetector:
                 panel_active=False, panel_conf=0.0,
                 candidate_count=0,
                 slot_count=0,
+                slot_conf=0.0,
                 raw_confidence=0.0,
             )
             return ProgressState(confidence=0.0), debug
@@ -93,6 +95,7 @@ class ProgressDetector:
                 panel_conf=panel_conf_circle,
                 candidate_count=candidate_count,
                 slot_count=slot_count,
+                slot_conf=slot_conf,
                 raw_confidence=0.0,
                 accepted_confidence=0.0,
             )
@@ -157,6 +160,7 @@ class ProgressDetector:
                 panel_conf=panel_conf_text,
                 candidate_count=0,
                 slot_count=0,
+                slot_conf=0.0,
                 raw_confidence=0.0,
                 accepted_confidence=0.0,
             )
@@ -195,6 +199,7 @@ class ProgressDetector:
             panel_active=False, panel_conf=0.0,
             candidate_count=0,
             slot_count=0,
+            slot_conf=0.0,
             raw_confidence=0.0,
             accepted_confidence=0.0,
         )

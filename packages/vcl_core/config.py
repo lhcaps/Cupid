@@ -80,6 +80,8 @@ class Wave1Config(BaseModel):
     persistent_required_strong: int = 2
     # Initial counter check: max objective_current at wave start (Wave 1 = 0)
     initial_counter_max: int = 0
+    # Allow starting mid-wave at a non-zero counter (e.g. 2/4 resume)
+    allow_resume_mid_wave: bool = False
 
 
 class ObservationHakiConfig(BaseModel):

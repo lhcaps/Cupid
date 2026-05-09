@@ -81,6 +81,16 @@ wave1:
   verify_window_sec: 1.5
   max_cleanup_cycles: 2
   next_stage_name: "The Forsaken Garden"
+  # Stage start guard: only 0/4 passes by default.
+  # Set initial_counter_max to None or use allow_resume_mid_wave to allow mid-wave resume.
+  initial_counter_max: 0
+  allow_resume_mid_wave: false
+  # Persistent clear: fires when many 4/4 reads with intermittent confidence
+  stable_window_size: 3
+  stable_required_count: 3
+  persistent_window_size: 12
+  persistent_required_total: 8
+  persistent_required_strong: 2
 
 observation_haki:
   scan_duration_ms: 900

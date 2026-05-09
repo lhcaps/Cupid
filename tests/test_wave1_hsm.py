@@ -862,3 +862,55 @@ class TestWave1HSM:
         # initial_counter_max=None disables the check
         ok4, reason4 = guard_stage_verified(make_progress(current=2, total=4, confidence=0.85), initial_counter_max=None)
         assert ok4, f"initial_counter_max=None should disable check: {reason4}"
+
+    def test_guard_stage_verified_allow_resume_mid_wave_true(self):
+        """guard_stage_verified with allow_resume_mid_wave=True passes counter 2/4."""
+        from vcl_hsm.transitions import guard_stage_verified
+
+        p = make_progress(current=2, total=4, confidence=0.85)
+        ok, reason = guard_stage_verified(p, allow_resume_mid_wave=True)
+        assert ok, f"Should accept counter=2 with allow_resume_mid_wave=True: {reason}"
+        assert "mid_wave_resume_allowed" in reason
+
+        # Without flag, same counter is rejected
+        ok2, reason2 = guard_stage_verified(p, allow_resume_mid_wave=False)
+        assert not ok2, f"Should reject counter=2 with allow_resume_mid_wave=False: {reason2}"
+        assert "initial_counter_too_high" in reason2
+
+    def test_verify_stage_ui_with_resume_flag(self):
+        """VERIFY_STAGE_UI with allow_resume_mid_wave=True transitions from 2/4."""
+        hsm = Wave1HSM()
+        hsm.wave1_cfg.allow_resume_mid_wave = True
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_STAGE_UI, tick())
+
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=2, total=4, confidence=0.85),
+            compass=make_compass(),
+            current_time=tick(),
+        )
+
+        assert hsm.state == Wave1State.AGGRO_WITH_GEPPO, \
+            f"VERIFY_STAGE_UI should transition to AGGRO with allow_resume_mid_wave=True, got {hsm.state}"
+
+    def test_verify_stage_ui_without_resume_flag_stays(self):
+        """VERIFY_STAGE_UI with allow_resume_mid_wave=False stays at 2/4."""
+        hsm = Wave1HSM()
+        hsm.wave1_cfg.allow_resume_mid_wave = False
+        tick = make_ticker()
+
+        hsm.tick(game_state=None, progress=None, compass=None, current_time=tick())
+        hsm._transition_to(Wave1State.VERIFY_STAGE_UI, tick())
+
+        hsm.tick(
+            game_state=None,
+            progress=make_progress(current=2, total=4, confidence=0.85),
+            compass=make_compass(),
+            current_time=tick(),
+        )
+
+        assert hsm.state == Wave1State.VERIFY_STAGE_UI, \
+            f"VERIFY_STAGE_UI should stay at 2/4 with allow_resume_mid_wave=False, got {hsm.state}"

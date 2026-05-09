@@ -306,9 +306,13 @@ def live(
                             progress_crop=prog_crop,
                             counter_crop=cnt_crop,
                             debug_info={
+                                "hsm_state": hsm.state.value,
+                                "action_name": action.name.value,
+                                "action_reason": action.reason,
                                 "mode": debug_info.selected_mode,
                                 "candidates": debug_info.candidate_count,
                                 "slots": debug_info.slot_count,
+                                "slot_conf": debug_info.slot_conf,
                                 "circle_count": debug_info.circle_count,
                                 "circle_conf": debug_info.circle_conf,
                                 "text_count": debug_info.text_count,
@@ -322,6 +326,26 @@ def live(
                                 "progress_confidence": progress.confidence,
                             },
                         )
+
+                        # Visual overlay: draw crop rectangles on full frame
+                        try:
+                            panel_x1, panel_y1 = cfg_.crop.x1, cfg_.crop.y1
+                            panel_x2, panel_y2 = min(cfg_.crop.x2, w), min(cfg_.crop.y2, h)
+                            counter_x1, counter_y1 = cfg_.counter_crop.x1, cfg_.counter_crop.y1
+                            counter_x2, counter_y2 = min(cfg_.counter_crop.x2, w), min(cfg_.counter_crop.y2, h)
+                            wave_x1, wave_y1 = cfg_.wave_panel_crop.x1, cfg_.wave_panel_crop.y1
+                            wave_x2, wave_y2 = min(cfg_.wave_panel_crop.x2, w), min(cfg_.wave_panel_crop.y2, h)
+                            vision_debugger.save_overlay(
+                                ts=elapsed,
+                                frame=frame,
+                                crop_rects={
+                                    "progress_crop": (panel_x1, panel_y1, panel_x2, panel_y2),
+                                    "counter_crop": (counter_x1, counter_y1, counter_x2, counter_y2),
+                                    "wave_panel": (wave_x1, wave_y1, wave_x2, wave_y2),
+                                },
+                            )
+                        except Exception:
+                            pass  # overlay is non-critical
 
                     low_conf = progress.confidence < cfg.progress_ui.min_confidence
                     in_risky = hsm.state in RISKY_STATES
@@ -376,11 +400,13 @@ def live(
                     else:
                         conf_suffix = ""
 
+                    reason_suffix = f"  [{action.reason}]" if cfg.debug.vision or mode == "assist" else ""
+
                     console.print(
                         f"  [dim]{elapsed:.1f}s[/dim] [{hsm.state.value}] "
                         f"action={action.name.value} obj={progress_str} "
                         f"pconf={progress.confidence:.2f}{' ' + conf_suffix if conf_suffix else ''} "
-                        f"cc={compass.confidence:.2f}"
+                        f"cc={compass.confidence:.2f}{reason_suffix}"
                     )
 
                     logger.log(
@@ -558,6 +584,182 @@ def keyboard_test(
 
     console.print("[green]All keys tested successfully![/green]")
     backend.close()
+
+
+@app.command()
+def calibrate_progress(
+    config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
+    capture_backend: Annotated[str | None, typer.Option("--capture-backend")] = None,
+    frames: Annotated[int, typer.Option("--frames", "-n")] = 5,
+) -> None:
+    """
+    Calibrate progress detector: capture N frames, run detector, save crops and summary.
+
+    Use this to verify crop regions are correct before running live assist/execute.
+
+    Does NOT run HSM. Does NOT send input. Safe for diagnosis.
+
+    Output:
+      reports/vision_debug/calibration_<timestamp>/
+        - full frame images
+        - progress_crop and counter_crop crops
+        - overlay images with crop rectangles drawn
+        - debug JSON with full detector output per frame
+        - summary table printed to console
+    """
+    from vcl_vision.frame_source import LiveFrameSource
+    from vcl_vision.progress_detector import ProgressDetector
+    from vcl_vision.vision_debug import VisionDebug
+    from vcl_core.config import DebugConfig, CaptureConfig
+
+    cfg = _load_config(config)
+
+    if capture_backend:
+        cfg.capture.backend = capture_backend
+
+    # Create a calibration run ID
+    import datetime
+    run_id = f"calibration_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    debug_cfg = DebugConfig(vision=True, save_every_n_frames=1)
+    vision_debugger = VisionDebug(run_id, debug_cfg)
+
+    console.print(f"[cyan]Calibration run: {run_id}[/cyan]")
+    console.print(f"[cyan]Capture backend: {cfg.capture.backend}[/cyan]")
+    console.print(f"[cyan]Frames to capture: {frames}[/cyan]")
+
+    try:
+        source = LiveFrameSource(
+            monitor_index=cfg.capture.monitor_index,
+            fps_target=cfg.capture.fps_target,
+            region=cfg.capture.region.to_dict() if cfg.capture.region else None,
+            backend=cfg.capture.backend,
+        )
+    except Exception as e:
+        console.print(f"[red]Failed to create frame source: {e}[/red]")
+        raise typer.Exit(code=1)
+
+    progress_det = ProgressDetector(cfg.progress_ui)
+
+    results: list[dict] = []
+    captured = 0
+
+    console.print("[cyan]Capturing frames...[/cyan]")
+
+    with source:
+        for ts, frame in source:
+            if captured >= frames:
+                break
+
+            h, w = frame.shape[:2]
+            cfg_ = progress_det.config
+
+            # Extract crops
+            px1, py1 = cfg_.crop.x1, cfg_.crop.y1
+            px2, py2 = min(cfg_.crop.x2, w), min(cfg_.crop.y2, h)
+            prog_crop = frame[py1:py2, px1:px2] if px1 < px2 and py1 < py2 else frame
+
+            cx1, cy1 = cfg_.counter_crop.x1, cfg_.counter_crop.y1
+            cx2, cy2 = min(cfg_.counter_crop.x2, w), min(cfg_.counter_crop.y2, h)
+            cnt_crop = frame[cy1:cy2, cx1:cx2] if cx1 < cx2 and cy1 < cy2 else frame
+
+            # Run detector
+            progress_state, debug_info = progress_det.detect_with_debug(frame)
+
+            # Save crops
+            vision_debugger.save_frame(
+                ts=ts,
+                frame=frame,
+                progress_crop=prog_crop,
+                counter_crop=cnt_crop,
+                debug_info={
+                    "objective_current": progress_state.objective_current,
+                    "objective_total": progress_state.objective_total,
+                    "progress_confidence": progress_state.confidence,
+                    "selected_mode": debug_info.selected_mode,
+                    "raw_confidence": debug_info.raw_confidence,
+                    "accepted_confidence": debug_info.accepted_confidence,
+                    "circle_count": debug_info.circle_count,
+                    "circle_conf": debug_info.circle_conf,
+                    "candidate_count": debug_info.candidate_count,
+                    "slot_count": debug_info.slot_count,
+                    "slot_conf": debug_info.slot_conf,
+                    "text_count": debug_info.text_count,
+                    "text_conf": debug_info.text_conf,
+                    "panel_active": debug_info.panel_active,
+                    "panel_conf": debug_info.panel_conf,
+                },
+            )
+
+            # Draw overlay
+            vision_debugger.save_overlay(
+                ts=ts,
+                frame=frame,
+                crop_rects={
+                    "progress_crop": (px1, py1, px2, py2),
+                    "counter_crop": (cx1, cy1, cx2, cy2),
+                    "wave_panel": (
+                        cfg_.wave_panel_crop.x1, cfg_.wave_panel_crop.y1,
+                        min(cfg_.wave_panel_crop.x2, w), min(cfg_.wave_panel_crop.y2, h),
+                    ),
+                },
+            )
+
+            results.append({
+                "ts": ts,
+                "obj": f"{progress_state.objective_current}/{progress_state.objective_total}"
+                if progress_state.objective_current is not None else "?",
+                "pconf": progress_state.confidence,
+                "raw_conf": debug_info.raw_confidence,
+                "acpt_conf": debug_info.accepted_confidence,
+                "mode": debug_info.selected_mode or "-",
+                "cands": debug_info.candidate_count,
+                "slots": debug_info.slot_count,
+                "slot_conf": debug_info.slot_conf,
+                "text_ct": debug_info.text_count,
+                "text_cf": debug_info.text_conf,
+                "panel": debug_info.panel_active,
+                "panel_cf": debug_info.panel_conf,
+            })
+            captured += 1
+            console.print(f"  Frame {captured}/{frames}: obj={results[-1]['obj']} "
+                          f"pconf={progress_state.confidence:.2f} "
+                          f"mode={debug_info.selected_mode or '-'}")
+
+    console.print(f"\n[green]Calibration saved to: {vision_debugger.out_dir}[/green]\n")
+
+    # Print summary table
+    from rich.table import Table
+    table = Table(title="Progress Detector Calibration Summary")
+    table.add_column("Frame", style="dim")
+    table.add_column("Obj", justify="center")
+    table.add_column("pconf", justify="right")
+    table.add_column("raw", justify="right")
+    table.add_column("acpt", justify="right")
+    table.add_column("Mode", justify="center")
+    table.add_column("Cands", justify="right")
+    table.add_column("Slots", justify="right")
+    table.add_column("Panel", justify="center")
+
+    for i, r in enumerate(results):
+        table.add_row(
+            str(i),
+            r["obj"],
+            f"{r['pconf']:.2f}",
+            f"{r['raw_conf']:.2f}",
+            f"{r['acpt_conf']:.2f}",
+            r["mode"],
+            str(r["cands"]),
+            str(r["slots"]),
+            "Y" if r["panel"] else "N",
+        )
+
+    console.print(table)
+
+    console.print(
+        "\n[yellow]If counter_crop shows wrong area, adjust progress_ui.counter_crop in config.[/yellow]\n"
+        "[yellow]If panel_active=N, the progress UI may not be visible or crop is misaligned.[/yellow]\n"
+        "[yellow]Overlay images show crop rectangles on full frame for visual verification.[/yellow]"
+    )
 
 
 def _load_config(config: Path | None) -> AppConfig:

@@ -189,6 +189,7 @@ class Wave1HSM:
                 expected_stage=self.progress_cfg.stage_name,
                 min_confidence=self.progress_cfg.min_confidence,
                 initial_counter_max=self.wave1_cfg.initial_counter_max,
+                allow_resume_mid_wave=self.wave1_cfg.allow_resume_mid_wave,
             )
             if ok:
                 self._transition_to(Wave1State.AGGRO_WITH_GEPPO, current_time)

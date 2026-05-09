@@ -44,6 +44,53 @@ class VisionDebug:
             return True
         return False
 
+    def save_overlay(
+        self,
+        ts: float,
+        frame: np.ndarray,
+        crop_rects: dict,
+    ) -> None:
+        """
+        Save a full-frame overlay with crop rectangles annotated.
+
+        Args:
+            ts: Timestamp in seconds.
+            frame: Full capture frame.
+            crop_rects: Dict of name -> (x1, y1, x2, y2) rectangles to draw.
+                       Colors are auto-assigned from BGR palette.
+        """
+        if not self.config.vision or frame is None or frame.size == 0:
+            return
+
+        self._out_dir.mkdir(parents=True, exist_ok=True)
+
+        overlay = frame.copy()
+        colors = [
+            (0, 255, 0),    # green
+            (255, 0, 0),    # blue
+            (0, 165, 255),  # orange
+            (128, 0, 128),   # purple
+            (0, 255, 255),  # yellow
+            (180, 180, 180), # gray
+        ]
+        for i, (name, rect) in enumerate(crop_rects.items()):
+            if rect is None:
+                continue
+            x1, y1, x2, y2 = rect
+            color = colors[i % len(colors)]
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                overlay,
+                name,
+                (x1 + 4, y1 + 16),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                1,
+            )
+
+        cv2.imwrite(str(self._out_dir / f"overlay_{ts:.3f}.png"), overlay)
+
     def save_frame(
         self,
         ts: float,

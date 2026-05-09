@@ -169,6 +169,7 @@ class TestLiveConfidenceGateIntegration:
             panel_conf=0.8,
             candidate_count=0,
             slot_count=0,
+            slot_conf=progress.confidence,
             raw_confidence=progress.confidence,
             accepted_confidence=progress.confidence,
         )
